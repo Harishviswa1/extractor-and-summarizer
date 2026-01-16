@@ -17,28 +17,27 @@ const authCheck = (req, res, next) => {
         return next();
     }
 
-    // 2) Direct API Key (Legacy/Dev/Direct B2B)
+    // 2) Direct API Key (Admin / Internal Service)
     const apiKey = req.headers['x-api-key'];
 
     if (!apiKey) {
         return next(new AppError('Unauthorized: No API Key or RapidAPI Secret provided', 401));
     }
 
-    // START_HACK: Simulating key lookup
-    let role = 'BASIC';
-    if (apiKey.startsWith('pro_')) role = 'PRO';
-    if (apiKey.startsWith('ultra_')) role = 'ULTRA';
-    if (apiKey.startsWith('mega_')) role = 'MEGA';
-    if (apiKey === process.env.ADMIN_API_KEY) role = 'ADMIN';
+    // STRICT CHECK: Only allow Admin Key for direct access
+    // This prevents random strings like '1234' from working freely.
+    if (apiKey === process.env.ADMIN_API_KEY) {
+        req.user = { apiKey, role: 'ADMIN' };
+        logger.info('Authenticated request with role: ADMIN');
+        return next();
+    }
 
-    req.user = {
-        apiKey,
-        role
-    };
-    // END_HACK
+    // If you want to support manual Keys for friends/clients outside RapidAPI, add them here:
+    // if (apiKey === 'some-client-key') { ... }
 
-    logger.info(`Authenticated request with role: ${role}`);
-    next();
+    // If we get here, the key is invalid
+    logger.warn(`Invalid API Key attempt: ${apiKey}`);
+    return next(new AppError('Unauthorized: Invalid API Key', 401));
 };
 
 module.exports = authCheck;
