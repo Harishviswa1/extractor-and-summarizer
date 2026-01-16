@@ -4,8 +4,16 @@ const AppError = require('../utils/appError');
 
 class OpenAIService {
     constructor() {
+        // Debugging: Log partial key or missing status to verify Env loading
+        const key = process.env.OPEN_AI_KEY;
+        if (!key) {
+            logger.error('CRITICAL: OPEN_AI_KEY is missing from process.env');
+        } else {
+            logger.info(`OpenAI Key loaded: ${key.substring(0, 5)}...`);
+        }
+
         this.openai = new OpenAI({
-            apiKey: process.env.OPEN_AI_KEY,
+            apiKey: key,
         });
 
         this.model = 'gpt-4o-mini';
