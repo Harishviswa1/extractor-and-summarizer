@@ -4,8 +4,8 @@ const AppError = require('../utils/appError');
 
 class OpenAIService {
     constructor() {
-        // Debugging: Log partial key or missing status to verify Env loading
-        const key = process.env.OPEN_AI_KEY;
+        // Debugging: Support both standard and custom env var names
+        const key = process.env.OPENAI_API_KEY || process.env.OPEN_AI_KEY;
         if (!key) {
             logger.error('CRITICAL: OPEN_AI_KEY is missing from process.env');
         } else {
