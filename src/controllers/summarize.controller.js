@@ -18,7 +18,7 @@ exports.summarizeUrl = async (req, res, next) => {
             status: 'success',
             data: {
                 summary,
-                original_length: extracted.content.length
+                original_length: (extracted.content || '').length
             }
         });
     } catch (err) {
