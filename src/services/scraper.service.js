@@ -1,6 +1,8 @@
 const axios = require('axios');
 const cheerio = require('cheerio');
 const { chromium } = require('playwright');
+const { JSDOM } = require('jsdom');
+const { Readability } = require('@mozilla/readability');
 const redis = require('../config/redis');
 const logger = require('../config/logger');
 const AppError = require('../utils/appError');
@@ -15,8 +17,8 @@ class ScraperService {
         if (!this.browser) {
             logger.info('Launching Playwright Browser...');
             this.browser = await chromium.launch({
-                headless: true, // Always headless in prod
-                args: ['--no-sandbox', '--disable-setuid-sandbox'] // Critical for Docker
+                headless: true,
+                args: ['--no-sandbox', '--disable-setuid-sandbox']
             });
         }
         return this.browser;
@@ -29,7 +31,6 @@ class ScraperService {
         }
     }
 
-    // Main public method
     async extract(url, jobId = null) {
         // 1. Check Cache
         const cacheKey = `extract:${url}`;
@@ -43,42 +44,47 @@ class ScraperService {
         if (jobId) await this.updateJob(jobId, 'fetching');
 
         let content = null;
-        let strategy = 'fetch-cheerio';
+        let strategy = 'fetch-readability';
 
         try {
-            // 2. Try Fetch + Cheerio
-            logger.info(`Attempting pure fetch for ${url}`);
+            // LAYER 1: Fast Fetch + Readability
+            logger.info(`Attempting Layer 1 (Fetch) for ${url}`);
             content = await this.fetchAndParse(url);
         } catch (err) {
-            logger.warn(`Fetch failed for ${url}: ${err.message}. Switching to Playwright.`);
-            strategy = 'playwright';
+            logger.warn(`Layer 1 failed for ${url}: ${err.message}. Switching to Layer 2.`);
+            strategy = 'playwright-readability';
         }
 
-        // 3. If empty or failed, use Playwright
+        // LAYER 2: Playwright + Readability (If Layer 1 empty/short)
+        // We use a loose threshold (200 chars) to detect "JavaScript Required" or empty pages
         if (!content || content.length < 200) {
-            logger.info(`Content too short (${content ? content.length : 0} chars) or failed. Using Playwright for ${url}`);
+            logger.info(`Content insufficient (${content ? content.length : 0} chars). Switching to Layer 2 (Playwright) for ${url}`);
             try {
                 content = await this.playwrightParse(url);
-                strategy = 'playwright';
+                strategy = 'playwright-readability';
             } catch (err) {
-                logger.error(`Playwright failed for ${url}: ${err.message}`);
+                logger.error(`Layer 2 failed for ${url}: ${err.message}`);
 
-                // If it's a navigation error, don't retry proxy, it's likely a bad URL
                 if (err.message.includes('ERR_NAME_NOT_RESOLVED') || err.message.includes('Invalid URL')) {
                     throw new AppError('Invalid URL or Host Unreachable', 400);
                 }
-                // 4. Retry with Proxy
+
+                // LAYER 2.5: Proxy Retry
                 if (process.env.PROXY_SERVER_URL) {
                     logger.info(`Retrying ${url} with proxy...`);
                     content = await this.playwrightParse(url, { proxy: process.env.PROXY_SERVER_URL });
                     strategy = 'playwright-proxy';
                 } else {
+                    // Start Layer 3 (Raw Fallback) logic happens inside parseHtml's failure path usually,
+                    // but if Playwright crashes entirely, we might re-throw.
+                    // However, we want to fail gracefully.
                     throw err;
                 }
             }
         }
 
-        if (!content) {
+        // Final Check
+        if (!content || content.length === 0) {
             throw new AppError('Unable to extract meaningful content', 422);
         }
 
@@ -89,9 +95,8 @@ class ScraperService {
             extractedAt: new Date().toISOString()
         };
 
-        // 5. Cache result (expire in 24 hours)
+        // Cache result (24h)
         await redis.set(cacheKey, JSON.stringify(result), 'EX', 86400);
-
         if (jobId) await this.updateJob(jobId, 'completed', result);
 
         return result;
@@ -100,62 +105,72 @@ class ScraperService {
     async fetchAndParse(url) {
         const { data } = await axios.get(url, {
             headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+                // Real-user alias to avoid simple blocking
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
             },
-            timeout: 5000
+            timeout: 8000
         });
-        return this.cleanHtml(data);
+        return this.parseHtml(data, url);
     }
 
     async playwrightParse(url, options = {}) {
         const browser = await this.initBrowser();
-        const context = await browser.newContext(options.proxy ? { proxy: { server: options.proxy } } : {});
+        const context = await browser.newContext(options.proxy ? { proxy: { server: options.proxy } } : {
+            userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        });
         const page = await context.newPage();
 
         try {
             await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
-            // Wait for some text to appear
-            await page.waitForSelector('body');
+            // Wait for body to be non-empty
+            await page.waitForSelector('body', { timeout: 5000 }).catch(() => { });
+
+            // Optional: aggressive wait for lazy loaded text
+            await page.waitForTimeout(2000);
 
             const html = await page.content();
             await context.close();
-            return this.cleanHtml(html);
+            return this.parseHtml(html, url);
         } catch (e) {
             await context.close();
             throw e;
         }
     }
 
-    cleanHtml(html) {
+    parseHtml(html, url) {
+        // Pre-clean noisy elements before Readability runs
+        // This helps Readability focus on the actual article
         const $ = cheerio.load(html);
+        $('script, style, noscript, iframe, svg, nav, footer, .ad, .ads, .social-share, .cookie-consent, [role="alert"]').remove();
 
-        // Remove junk
-        $('script, style, nav, footer, iframe, .ad, .ads, .social-share, .cookie-consent').remove();
+        // Update HTML for JSDOM
+        const cleanHtml = $.html();
 
-        // Extract main text - simplified heuristic
-        // Real enterprise solutions use readability.js or similar, but we'll use a simple generic extraction
-        // focusing on p, h1, h2, h3, h4, h5, h6, li
-        let text = '';
-        $('article, main, #content, .post-content, body').first().find('p, h1, h2, h3, ul, ol').each((i, el) => {
-            const t = $(el).text().trim();
-            if (t.length > 20) text += t + '\n\n';
-        });
+        const doc = new JSDOM(cleanHtml, { url });
+        const reader = new Readability(doc.window.document);
+        const article = reader.parse();
 
-        if (!text) {
-            // Fallback if no specific container found
-            text = $('body').text().replace(/\s+/g, ' ').trim();
+        // Strategy A: Mozilla Readability (High Quality)
+        if (article && article.textContent && article.textContent.trim().length > 100) {
+            logger.info(`Readability success for ${url}`);
+            return article.textContent.trim();
         }
 
-        return text;
+        // Strategy B: Raw Text Fallback (Layer 3)
+        // If Readability fails to find a structured article, dump the body text.
+        logger.warn(`Readability returned null/empty for ${url}. Using Raw Body fallback.`);
+
+        let rawText = $('body').text().replace(/\s+/g, ' ').trim();
+
+        // If raw extraction is also tiny, return null to trigger Playwright (if not already tried) or error
+        return rawText.length > 50 ? rawText : null;
     }
 
     async updateJob(jobId, status, result = null) {
         const jobKey = `job:${jobId}`;
         const data = { status, updatedAt: new Date().toISOString() };
         if (result) data.result = result;
-        await redis.set(jobKey, JSON.stringify(data), 'EX', 3600); // 1 hour retention
-        // Emit event via socket (will need to require io instance or send via redis pub/sub if separate process)
-        // For simplicity, we assume single instance or redis pub/sub listener elsewhere
+        await redis.set(jobKey, JSON.stringify(data), 'EX', 3600);
         await redis.publish('job-updates', JSON.stringify({ jobId, ...data }));
     }
 }
