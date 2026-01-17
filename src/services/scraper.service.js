@@ -1,6 +1,8 @@
 const axios = require('axios');
 const cheerio = require('cheerio');
 const { chromium } = require('playwright');
+const { JSDOM } = require('jsdom');
+const { Readability } = require('@mozilla/readability');
 const redis = require('../config/redis');
 const logger = require('../config/logger');
 const AppError = require('../utils/appError');
@@ -43,10 +45,10 @@ class ScraperService {
         if (jobId) await this.updateJob(jobId, 'fetching');
 
         let content = null;
-        let strategy = 'fetch-cheerio';
+        let strategy = 'fetch-readability';
 
         try {
-            // 2. Try Fetch + Cheerio
+            // 2. Try Fetch + Readability
             logger.info(`Attempting pure fetch for ${url}`);
             content = await this.fetchAndParse(url);
         } catch (err) {
@@ -55,11 +57,11 @@ class ScraperService {
         }
 
         // 3. If empty or failed, use Playwright
-        if (!content || content.length < 500) {
+        if (!content || content.length < 200) {
             logger.info(`Content too short or failed. Using Playwright for ${url}`);
             try {
                 content = await this.playwrightParse(url);
-                strategy = 'playwright';
+                strategy = 'playwright-readability';
             } catch (err) {
                 logger.error(`Playwright failed for ${url}: ${err.message}`);
 
@@ -71,7 +73,7 @@ class ScraperService {
                 if (process.env.PROXY_SERVER_URL) {
                     logger.info(`Retrying ${url} with proxy...`);
                     content = await this.playwrightParse(url, { proxy: process.env.PROXY_SERVER_URL });
-                    strategy = 'playwright-proxy';
+                    strategy = 'playwright-proxy-readability';
                 } else {
                     throw err;
                 }
@@ -104,7 +106,7 @@ class ScraperService {
             },
             timeout: 5000
         });
-        return this.cleanHtml(data);
+        return this.parseHtml(data, url);
     }
 
     async playwrightParse(url, options = {}) {
@@ -119,34 +121,27 @@ class ScraperService {
 
             const html = await page.content();
             await context.close();
-            return this.cleanHtml(html);
+            return this.parseHtml(html, url);
         } catch (e) {
             await context.close();
             throw e;
         }
     }
 
-    cleanHtml(html) {
-        const $ = cheerio.load(html);
+    parseHtml(html, url) { // Renamed from cleanHtml to match purpose
+        const doc = new JSDOM(html, { url });
+        const reader = new Readability(doc.window.document);
+        const article = reader.parse();
 
-        // Remove junk
-        $('script, style, nav, footer, iframe, .ad, .ads, .social-share, .cookie-consent').remove();
-
-        // Extract main text - simplified heuristic
-        // Real enterprise solutions use readability.js or similar, but we'll use a simple generic extraction
-        // focusing on p, h1, h2, h3, h4, h5, h6, li
-        let text = '';
-        $('article, main, #content, .post-content, body').first().find('p, h1, h2, h3, ul, ol').each((i, el) => {
-            const t = $(el).text().trim();
-            if (t.length > 20) text += t + '\n\n';
-        });
-
-        if (!text) {
-            // Fallback if no specific container found
-            text = $('body').text().replace(/\s+/g, ' ').trim();
+        // Fallback or Return Content
+        if (article && article.textContent && article.textContent.length > 50) {
+            return article.textContent.trim();
         }
 
-        return text;
+        // Cheerio Fallback if Readability fails
+        const $ = cheerio.load(html);
+        $('script, style, nav, footer, iframe, .ad, .ads, .social-share, .cookie-consent').remove();
+        return $('body').text().replace(/\s+/g, ' ').trim();
     }
 
     async updateJob(jobId, status, result = null) {
