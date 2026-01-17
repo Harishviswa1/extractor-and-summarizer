@@ -26,7 +26,7 @@ app.use(compression());
 app.use(express.json({ limit: '10mb' })); // Allow large text payloads
 
 // Routes
-app.use('/api', apiRoutes);
+app.use('/api/v1', apiRoutes);
 
 // Global Error Handler
 app.use((err, req, res, next) => {
