@@ -22,7 +22,8 @@ exports.summarizeUrl = async (req, res, next) => {
 
         // 2. Get text WITHOUT changing structure
         let contentToSummarize =
-            extracted.markdown ||
+            extracted.data.data.content.text
+        extracted.markdown ||
             extracted.textContent ||
             extracted.content?.text ||
             extracted.content ||
