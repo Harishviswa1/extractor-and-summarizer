@@ -12,17 +12,22 @@ exports.summarizeUrl = async (req, res, next) => {
         // 1. Extract
         const extracted = await scraperService.extract(url);
 
-        // 2. Summarize
+        // 2. Summarize & Generate Headlines (Parallel)
         // Use Markdown if available (best for LLM), otherwise Text, then Content
         const contentToSummarize = extracted.markdown || extracted.textContent || extracted.content || '';
         logger.info(`Summarizing content length: ${contentToSummarize.length} chars`);
-        const summary = await openaiService.summarize(contentToSummarize, lang || 'en', style || 'bullet');
+
+        const [summary, headlines] = await Promise.all([
+            openaiService.summarize(contentToSummarize, lang || 'en', style || 'bullet'),
+            openaiService.generateHeadlines(contentToSummarize)
+        ]);
 
         // 3. Clean Response for Summarize API (match structure)
         res.status(200).json({
             status: 'success',
             data: {
                 summary,
+                headlines,
                 original_length: contentToSummarize.length,
                 url: extracted.url,
                 title: extracted.title,
