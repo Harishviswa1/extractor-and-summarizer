@@ -51,46 +51,69 @@ exports.summarizeUrl = async (req, res, next) => {
         }
 
         // --- Fallback: Playwright (if Fast Path failed) ---
-        if (!contentToSummarize) {
-            logger.info('Falling back to Playwright...');
-            browser = await chromium.launch({
-                headless: true,
-                args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-blink-features=AutomationControlled']
-            });
-            const context = await browser.newContext({
-                userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-                extraHTTPHeaders: {
-                    'Referer': 'https://www.google.com/',
-                    'Accept-Language': 'en-US,en;q=0.9'
+        // Helper to detect bot blocks
+        const isBotCheck = (t, txt) => {
+            const lowT = (t || '').toLowerCase();
+            const lowTxt = (txt || '').toLowerCase();
+            return lowT.includes('are you a robot') || lowT.includes('security check') || lowTxt.includes('unusual activity');
+        };
+
+        // --- Fallback: Playwright (if Fast Path failed or was blocked) ---
+        if (!contentToSummarize || isBotCheck(title, contentToSummarize)) {
+            logger.info('Falling back to Playwright (Regular)...');
+
+            const runPlaywright = async (targetUrl, useProxy = false) => {
+                let context = null;
+                let browserInstance = null; // Renamed to avoid conflict with outer 'browser'
+                try {
+                    browserInstance = await chromium.launch({
+                        headless: true,
+                        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-blink-features=AutomationControlled'],
+                        proxy: useProxy && process.env.PROXY_SERVER_URL ? { server: process.env.PROXY_SERVER_URL } : undefined
+                    });
+                    context = await browserInstance.newContext({
+                        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+                        extraHTTPHeaders: { 'Referer': 'https://www.google.com/', 'Accept-Language': 'en-US,en;q=0.9' }
+                    });
+                    const page = await context.newPage();
+                    await page.addInitScript(() => Object.defineProperty(navigator, 'webdriver', { get: () => undefined }));
+
+                    // Route blocking
+                    await page.route('**/*.{png,jpg,jpeg,gif,svg,css,woff,woff2,mp4,webm,mp3,wav,ico,pdf,zip}', route => route.abort());
+                    await page.route('**/*analytics*', route => route.abort());
+                    await page.route('**/*ads*', route => route.abort());
+
+                    await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+                    await page.evaluate(() => document.querySelectorAll('script, style, noscript, iframe, svg, nav, footer, .ad, .ads, [role="alert"]').forEach(el => el.remove()));
+
+                    const content = await page.content();
+                    await browserInstance.close();
+
+                    const d = new JSDOM(content, { url: targetUrl });
+                    const r = new Readability(d.window.document);
+                    return r.parse();
+                } catch (e) {
+                    logger.warn(`Playwright run failed for ${targetUrl}: ${e.message}`);
+                    if (browserInstance) await browserInstance.close();
+                    return null;
                 }
-            });
-            const page = await context.newPage();
+            };
 
-            // Evasion
-            await page.addInitScript(() => {
-                Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-            });
+            // 2. Try Direct Playwright
+            let article = await runPlaywright(url);
 
-            // Block resources for speed
-            await page.route('**/*.{png,jpg,jpeg,gif,svg,css,woff,woff2,mp4,webm,mp3,wav,ico,pdf,zip}', route => route.abort());
-            await page.route('**/*analytics*', route => route.abort());
-            await page.route('**/*ads*', route => route.abort());
+            // 3. Try Google Cache if blocked
+            if (!article || !article.textContent || isBotCheck(article.title, article.textContent)) {
+                logger.info('Direct Playwright failed/blocked. Trying Google Cache...');
+                const cacheUrl = `http://webcache.googleusercontent.com/search?q=cache:${encodeURIComponent(url)}`;
+                article = await runPlaywright(cacheUrl);
+            }
 
-            await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
-
-            // Simple cleanup
-            await page.evaluate(() => {
-                document.querySelectorAll('script, style, noscript, iframe, svg, nav, footer, .ad, .ads, [role="alert"]').forEach(el => el.remove());
-            });
-
-            const htmlContent = await page.content();
-            await browser.close();
-            browser = null;
-
-            // Parse
-            const doc = new JSDOM(htmlContent, { url });
-            const reader = new Readability(doc.window.document);
-            const article = reader.parse();
+            // 4. Try Proxy if available and still blocked
+            if ((!article || !article.textContent || isBotCheck(article.title, article.textContent)) && process.env.PROXY_SERVER_URL) {
+                logger.info('Google Cache failed. Trying Proxy...');
+                article = await runPlaywright(url, true);
+            }
 
             if (article && article.textContent && article.textContent.trim().length > 50) {
                 contentToSummarize = article.textContent;

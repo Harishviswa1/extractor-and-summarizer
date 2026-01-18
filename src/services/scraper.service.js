@@ -56,31 +56,42 @@ class ScraperService {
             strategy = 'playwright-readability';
         }
 
-        if (!content || !content.textContent || content.textContent.length < 200) {
-            logger.info(`Content insufficient. Switching to Layer 2 (Playwright) for ${url}`);
+        if (!content || !content.textContent || content.textContent.length < 200 || this.isBotCheck(content.title, content.textContent)) {
+            logger.info(`Content insufficient or Bot Block detected. Switching to Layer 2 (Playwright) for ${url}`);
 
             try {
                 content = await this.playwrightParse(url);
                 strategy = 'playwright-readability';
             } catch (err) {
                 logger.error(`Layer 2 failed for ${url}: ${err.message}`);
+                // Proceed to next fallback
+            }
+        }
 
-                if (
-                    err.message.includes('ERR_NAME_NOT_RESOLVED') ||
-                    err.message.includes('Invalid URL')
-                ) {
-                    throw new AppError('Invalid URL or Host Unreachable', 400);
+        // Layer 3: Google Cache Fallback (New)
+        if (!content || !content.textContent || content.textContent.length < 200 || this.isBotCheck(content.title, content.textContent)) {
+            logger.info(`Layer 2 failed/blocked. Attempting Layer 3 (Google Cache) for ${url}`);
+            try {
+                const cacheUrl = `http://webcache.googleusercontent.com/search?q=cache:${encodeURIComponent(url)}`;
+                content = await this.playwrightParse(cacheUrl);
+                // Clean up Google Header artifacts if successful
+                if (content && content.textContent) {
+                    content.title = content.title.replace(' - Google Search', '').replace('cache:', '');
+                    strategy = 'google-cache';
                 }
+            } catch (err) {
+                logger.warn(`Layer 3 (Google Cache) failed: ${err.message}`);
+            }
+        }
 
-                if (process.env.PROXY_SERVER_URL) {
-                    logger.info(`Retrying ${url} with proxy...`);
-                    content = await this.playwrightParse(url, {
-                        proxy: process.env.PROXY_SERVER_URL
-                    });
-                    strategy = 'playwright-proxy';
-                } else {
-                    throw err;
-                }
+        // Layer 4: Proxy Fallback (Existing)
+        if (!content || !content.textContent || content.textContent.length < 200 || this.isBotCheck(content.title, content.textContent)) {
+            if (process.env.PROXY_SERVER_URL) {
+                logger.info(`Retrying ${url} with proxy...`);
+                content = await this.playwrightParse(url, {
+                    proxy: process.env.PROXY_SERVER_URL
+                });
+                strategy = 'playwright-proxy';
             }
         }
 
@@ -278,6 +289,18 @@ class ScraperService {
         await redis.set(jobKey, JSON.stringify(data), 'EX', 3600);
         await redis.publish('job-updates', JSON.stringify({ jobId, ...data }));
     }
+}
+
+isBotCheck(title, text) {
+    const t = (title || '').toLowerCase();
+    const b = (text || '').toLowerCase();
+    return t.includes('are you a robot') ||
+        t.includes('attention required') ||
+        t.includes('access denied') ||
+        t.includes('security check') ||
+        b.includes('pardon our interruption') ||
+        b.includes('detected unusual activity');
+}
 }
 
 module.exports = new ScraperService();
