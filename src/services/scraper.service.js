@@ -101,36 +101,60 @@ class ScraperService {
     }
 
     async fetchAndParse(url) {
-        const { data } = await axios.get(url, {
+        const response = await axios.get(url, {
             headers: {
-                // Real-user alias to avoid simple blocking
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'Connection': 'keep-alive',
+                'Upgrade-Insecure-Requests': '1',
+                'Sec-Fetch-Dest': 'document',
+                'Sec-Fetch-Mode': 'navigate',
+                'Sec-Fetch-Site': 'none',
+                'Sec-Fetch-User': '?1',
+                'Cache-Control': 'max-age=0'
             },
-            timeout: 8000
+            timeout: 10000,
+            validateStatus: (status) => status < 400 // Reject 403/404 explicitly
         });
-        return this.parseHtml(data, url);
+        return this.parseHtml(response.data, url);
     }
 
     async playwrightParse(url, options = {}) {
         const browser = await this.initBrowser();
-        const context = await browser.newContext(options.proxy ? { proxy: { server: options.proxy } } : {
-            userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-        });
-        const page = await context.newPage();
 
         try {
-            await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
-            // Wait for body to be non-empty
-            await page.waitForSelector('body', { timeout: 5000 }).catch(() => { });
+            const context = await browser.newContext({
+                userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                viewport: { width: 1920, height: 1080 },
+                locale: 'en-US',
+                extraHTTPHeaders: {
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+                    'Accept-Language': 'en-US,en;q=0.9',
+                    'Upgrade-Insecure-Requests': '1'
+                },
+                proxy: options.proxy ? { server: options.proxy } : undefined
+            });
 
-            // Optional: aggressive wait for lazy loaded text
-            await page.waitForTimeout(2000);
+            const page = await context.newPage();
+
+            // Evasion: Undefine webdriver
+            await page.addInitScript(() => {
+                Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+            });
+
+            // Block resources
+            await page.route('**/*.{png,jpg,jpeg,gif,svg,css,woff,woff2}', route => route.abort());
+
+            await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+            await page.waitForTimeout(2000); // Wait for hydration
 
             const html = await page.content();
             await context.close();
             return this.parseHtml(html, url);
         } catch (e) {
-            await context.close();
+            // Ensure context closes on error
             throw e;
         }
     }
