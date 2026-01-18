@@ -4,65 +4,68 @@ const rssService = require('../services/rss.service');
 const AppError = require('../utils/appError');
 const logger = require('../config/logger');
 
+const { chromium } = require('playwright');
+const { JSDOM } = require('jsdom');
+const { Readability } = require('@mozilla/readability');
+
 exports.summarizeUrl = async (req, res, next) => {
+    let browser = null;
     try {
         const { url, lang, length, html, style } = req.query;
         if (!url) return next(new AppError('URL required', 400));
 
-        const targetLength = length
-            ? Math.max(1, Math.min(parseInt(length, 10), 10))
-            : 0;
-
+        const targetLength = length ? Math.max(1, Math.min(parseInt(length, 10), 10)) : 0;
         const wantHtml = html === 'true' || html === '1';
 
-        logger.info(`Processing Summarize Request: ${url}`);
+        logger.info(`Processing Summarize Request (Direct Playwright): ${url}`);
 
-        // 1. Extract
-        const extracted = await scraperService.extract(url);
+        // --- Embedded Extraction Logic ---
+        browser = await chromium.launch({
+            headless: true,
+            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
+        });
+        const page = await browser.newPage({
+            userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        });
 
-        // 2. Prepare Content strategy: Markdown > Text > HTML
-        let contentToSummarize = extracted.markdown;
+        // Block resources for speed
+        await page.route('**/*.{png,jpg,jpeg,gif,svg,css,woff,woff2,mp4,webm,mp3,wav,ico,pdf,zip}', route => route.abort());
+        await page.route('**/*analytics*', route => route.abort());
+        await page.route('**/*ads*', route => route.abort());
 
-        if (!contentToSummarize || contentToSummarize.length < 50) {
-            contentToSummarize = extracted.textContent;
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
+
+        // Simple cleanup in browser context
+        await page.evaluate(() => {
+            document.querySelectorAll('script, style, noscript, iframe, svg, nav, footer, .ad, .ads, [role="alert"]').forEach(el => el.remove());
+        });
+
+        const htmlContent = await page.content();
+        await browser.close();
+        browser = null;
+
+        // Parse meaningful content
+        const doc = new JSDOM(htmlContent, { url });
+        const reader = new Readability(doc.window.document);
+        const article = reader.parse();
+
+        if (!article || !article.textContent || article.textContent.trim().length < 50) {
+            throw new AppError("Could not extract readable content from URL", 400);
         }
-        if (!contentToSummarize || contentToSummarize.length < 50) {
-            // Check if HTML content exists and is string
-            if (typeof extracted.content === 'string') {
-                contentToSummarize = extracted.content;
-            } else if (extracted.content && extracted.content.text) {
-                // Handle case where content might be nested object (though scraper service returns flat)
-                contentToSummarize = extracted.content.text;
-            }
-        }
 
-        if (!contentToSummarize || typeof contentToSummarize !== 'string' || !contentToSummarize.trim()) {
-            logger.error(`Summarize failed: No content extracted for ${url}`);
-            return next(new AppError("Could not extract readable content from URL", 400));
-        }
-
-        // 3. Clean Content
-        contentToSummarize = contentToSummarize
-            .replace(/<script[\s\S]*?<\/script>/gi, '')
-            .replace(/<style[\s\S]*?<\/style>/gi, '')
-            .replace(/<[^>]+>/g, ' ')
-            .replace(/\s+/g, ' ')
-            .trim();
-
-        if (contentToSummarize.length < 20) {
-            throw new AppError("Content too short to summarize", 422);
-        }
+        const contentToSummarize = article.textContent;
+        // ---------------------------------
 
         logger.info(`Summarizing ${contentToSummarize.length} chars...`);
 
-        // 4. Summarize
+        // Summarize
         let summary = await openaiService.summarize(contentToSummarize, {
             lang: lang || 'en',
             length: targetLength,
             style: style || 'concise'
         });
 
-        // 5. HTML formatting
+        // HTML formatting
         if (wantHtml) {
             summary = summary
                 .split('\n\n')
@@ -71,24 +74,21 @@ exports.summarizeUrl = async (req, res, next) => {
                 .join('');
         }
 
-        // 6. Response (NO structure changes)
         res.status(200).json({
             status: 'success',
             data: {
                 summary,
-                url: extracted.url || url,
-                title: extracted.title || '',
-                author: extracted.author || '',
-                published: extracted.published || '',
-                ttr: extracted.ttr || 0,
-                image: extracted.image,
-                favicon: extracted.favicon,
-                source: extracted.source,
+                url: url,
+                title: article.title || '',
+                author: article.byline || '', // Readability uses 'byline'
+                published: '', // Simplified extraction doesn't check meta tags deeply unless we keep JSDOM meta logic
+                ttr: Math.ceil(contentToSummarize.split(/\s+/).length / 200),
                 original_length: contentToSummarize.length
             }
         });
 
     } catch (err) {
+        if (browser) await browser.close();
         next(err);
     }
 };
