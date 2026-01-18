@@ -103,7 +103,7 @@ class ScraperService {
     async fetchAndParse(url) {
         const response = await axios.get(url, {
             headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
                 'Accept-Language': 'en-US,en;q=0.9',
                 'Accept-Encoding': 'gzip, deflate, br',
@@ -113,10 +113,11 @@ class ScraperService {
                 'Sec-Fetch-Mode': 'navigate',
                 'Sec-Fetch-Site': 'none',
                 'Sec-Fetch-User': '?1',
-                'Cache-Control': 'max-age=0'
+                'Cache-Control': 'max-age=0',
+                'Referer': 'https://www.google.com/' // Bypass some soft paywalls
             },
             timeout: 10000,
-            validateStatus: (status) => status < 400 // Reject 403/404 explicitly
+            validateStatus: (status) => status < 400
         });
         return this.parseHtml(response.data, url);
     }
@@ -124,28 +125,48 @@ class ScraperService {
     async playwrightParse(url, opts = {}) {
         const browser = await chromium.launch({
             headless: true,
+            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-blink-features=AutomationControlled'],
             proxy: opts.proxy ? { server: opts.proxy } : undefined
         });
 
-        const page = await browser.newPage({
-            userAgent:
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        const context = await browser.newContext({
+            userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+            locale: 'en-US',
+            extraHTTPHeaders: {
+                'Referer': 'https://www.google.com/',
+                'Accept-Language': 'en-US,en;q=0.9'
+            },
+            viewport: { width: 1920, height: 1080 }
         });
 
-        await page.goto(url, { waitUntil: "networkidle", timeout: 60000 });
+        const page = await context.newPage();
 
-        // Scroll to load lazy content
-        await page.evaluate(() => {
-            window.scrollTo(0, document.body.scrollHeight);
-        });
+        try {
+            // Evasion
+            await page.addInitScript(() => {
+                Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+            });
 
-        await page.waitForTimeout(2000);
+            await page.goto(url, { waitUntil: "domcontentloaded", timeout: 45000 });
 
-        const html = await page.content();
+            // Try waiting for main content selector (improves NYT success)
+            try {
+                await page.waitForSelector('article, main, [role="main"], h1', { timeout: 5000 });
+            } catch (e) { /* ignore and proceed with what we have */ }
 
-        await browser.close();
+            // Scroll to load lazy content
+            await page.evaluate(() => {
+                window.scrollTo(0, document.body.scrollHeight);
+            });
+            await page.waitForTimeout(1000); // Short grace period
 
-        return this.parseHtml(html, url);
+            const html = await page.content();
+            await browser.close();
+            return this.parseHtml(html, url);
+        } catch (e) {
+            await browser.close();
+            throw e;
+        }
     }
 
 
@@ -186,8 +207,8 @@ class ScraperService {
             return {
                 ...metadata,
                 title: article.title || metadata.title,
-                content: article.content, // HTML
-                textContent: cleanText(article.textContent), // Cleaned Text
+                textContent: cleanText(article.textContent),
+                content: article.content,
                 markdown: markdown,
                 ttr: Math.ceil(wordCount / 200),
                 links: this.extractLinks(cleanHtml, url)
