@@ -17,11 +17,11 @@ const jobController = require('../controllers/job.controller');
 
 router.get('/extract', extractController.extractUrl);
 router.get('/summarize', summarizeController.summarizeUrl);
-router.get('/results/:jobId', jobController.getJobResult);
+// router.get('/results/:jobId', jobController.getJobResult);
 
 router.post('/summarize-text', summarizeController.summarizeText);
 router.post('/compare', summarizeController.compare);
 router.post('/headline', summarizeController.headlines);
-router.post('/rss-monitor', summarizeController.monitorRss);
+// router.post('/rss-monitor', summarizeController.monitorRss);
 
 module.exports = router;

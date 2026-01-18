@@ -29,7 +29,7 @@ exports.extractUrl = async (req, res, next) => {
 
         res.status(200).json({
             status: 'success',
-            data: result
+            data: { ...result, jobId }
         });
     } catch (err) {
         next(err);

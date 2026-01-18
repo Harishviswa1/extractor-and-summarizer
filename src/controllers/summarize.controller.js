@@ -51,11 +51,14 @@ exports.summarizeText = async (req, res, next) => {
         const { text, lang, style } = req.body;
         if (!text) return next(new AppError('Text content required', 400));
 
-        const summary = await openaiService.summarize(text, lang || 'en', style || 'bullet');
+        const [summary, headlines] = await Promise.all([
+            openaiService.summarize(text, lang || 'en', style || 'bullet'),
+            openaiService.generateHeadlines(text)
+        ]);
 
         res.status(200).json({
             status: 'success',
-            data: { summary }
+            data: { summary, headlines }
         });
     } catch (err) {
         next(err);
