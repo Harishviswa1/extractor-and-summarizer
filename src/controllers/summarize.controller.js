@@ -6,39 +6,43 @@ const logger = require('../config/logger');
 
 exports.summarizeUrl = async (req, res, next) => {
     try {
-        const { url, lang, style } = req.query;
+        const { url, lang, length, html } = req.query;
         if (!url) return next(new AppError('URL required', 400));
 
-        // 1. Extract (Returns flat object: { url, markdown, title, author, ... })
+        const targetLength = length ? parseInt(length, 10) : 0;
+        const wantHtml = html === 'true' || html === '1';
+
+        // 1. Extract
         const extracted = await scraperService.extract(url);
 
-        // 2. Prepare Content (Priority: Markdown > Text > HTML)
-        const contentToSummarize = extracted.markdown || extracted.textContent || extracted.content?.text || extracted.content || "";
+        // 2. Prepare Content
+        const contentToSummarize = extracted.markdown || extracted.textContent || extracted.content || "";
 
         if (!contentToSummarize.trim()) {
             return next(new AppError("Could not extract readable content from URL", 400));
         }
 
-        logger.info(`Summarizing content length: ${contentToSummarize.length} chars`);
+        // 3. Summarize
+        let summary = await openaiService.summarize(contentToSummarize, {
+            lang: lang || 'en',
+            length: targetLength
+        });
 
-        // 3. Parallel Execution: Summarize + Headlines
-        const [summary, headlines] = await Promise.all([
-            openaiService.summarize(contentToSummarize, lang || 'en', style || 'bullet'),
-            openaiService.generateHeadlines(contentToSummarize)
-        ]);
+        // 4. HTML Formatting (Optional)
+        if (wantHtml) {
+            summary = summary.replace(/\n\n/g, '</p><p>').replace(/\n/g, '<br>');
+            summary = `<p>${summary}</p>`;
+        }
 
-        // 4. Return Clean Response
         res.status(200).json({
             status: 'success',
             data: {
                 summary,
-                headlines,
                 url: extracted.url,
                 title: extracted.title,
                 author: extracted.author,
                 published: extracted.published,
-                ttr: extracted.ttr,
-                original_length: contentToSummarize.length
+                ttr: extracted.ttr
             }
         });
     } catch (err) {
@@ -52,7 +56,7 @@ exports.summarizeText = async (req, res, next) => {
         if (!text) return next(new AppError('Text content required', 400));
 
         const [summary, headlines] = await Promise.all([
-            openaiService.summarize(text, lang || 'en', style || 'bullet'),
+            openaiService.summarize(text, { lang: lang || 'en', style: style || 'bullet' }),
             openaiService.generateHeadlines(text)
         ]);
 

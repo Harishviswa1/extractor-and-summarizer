@@ -25,8 +25,9 @@ class OpenAIService {
         this.model = 'gpt-4o-mini';
     }
 
-    async summarize(text, lang = 'en', style = 'bullet') {
-        const prompt = this.buildSummarizePrompt(text, lang, style);
+    async summarize(text, options = {}) {
+        const { lang = 'en', style = 'concise', length = 0 } = options;
+        const prompt = this.buildSummarizePrompt(text, lang, style, length);
 
         try {
             const completion = await this.openai.chat.completions.create({
@@ -103,20 +104,26 @@ class OpenAIService {
         }
     }
 
-    buildSummarizePrompt(text, lang, style) {
-        let styleInstruction = '';
-        switch (style) {
-            case 'bullet': styleInstruction = 'Provide a bullet point summary.'; break;
-            case 'eli5': styleInstruction = 'Explain like I am 5 years old.'; break;
-            case 'business': styleInstruction = 'Focus on business impact, key metrics, and actionable insights.'; break;
-            case 'headline': styleInstruction = 'Provide a single sentence summary.'; break;
-            default: styleInstruction = 'Provide a concise summary.';
+    buildSummarizePrompt(text, lang, style, length) {
+        let instruction = '';
+
+        // Priority: Length > Style
+        if (length > 0) {
+            instruction = `Provide a summary exactly ${length} paragraphs long.`;
+        } else {
+            switch (style) {
+                case 'bullet': instruction = 'Provide a bullet point summary.'; break;
+                case 'eli5': instruction = 'Explain like I am 5 years old.'; break;
+                case 'business': instruction = 'Focus on business impact, key metrics, and actionable insights.'; break;
+                case 'headline': instruction = 'Provide a single sentence summary.'; break;
+                default: instruction = 'Provide a concise summary.';
+            }
         }
 
         // Guard against undefined text
-        const safeText = (text || '').substring(0, 10000);
+        const safeText = (text || '').substring(0, 15000); // 15k chars context
 
-        return `Analyze the following text and translate the result to ${lang}. ${styleInstruction}
+        return `Analyze the following text and translate the result to ${lang}. ${instruction}
         
         Text:
         ${safeText} 

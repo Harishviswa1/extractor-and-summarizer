@@ -42,7 +42,8 @@ class RSSService {
                         const content = await scraperService.extract(latest.link);
 
                         // 2. Summarize
-                        const summary = await openaiService.summarize(content.content, 'en', 'bullet');
+                        // 2. Summarize
+                        const summary = await openaiService.summarize(content.content, { lang: 'en', style: 'bullet' });
 
                         // 3. Webhook
                         if (feed.webhookUrl) {
