@@ -14,7 +14,12 @@ exports.summarizeUrl = async (req, res, next) => {
 
         // 2. Summarize & Generate Headlines (Parallel)
         // Use Markdown if available (best for LLM), otherwise Text, then Content
-        const contentToSummarize = extracted.markdown || extracted.textContent || extracted.content || '';
+        const contentToSummarize = extracted.markdown || extracted.textContent || extracted.content || "";
+
+        if (!contentToSummarize.trim()) {
+            return next(new AppError("Could not extract readable content from URL", 400));
+        }
+
         logger.info(`Summarizing content length: ${contentToSummarize.length} chars`);
 
         const [summary, headlines] = await Promise.all([
