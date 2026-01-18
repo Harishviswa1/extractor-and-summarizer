@@ -2,6 +2,7 @@ const openaiService = require('../services/openai.service');
 const scraperService = require('../services/scraper.service');
 const rssService = require('../services/rss.service');
 const AppError = require('../utils/appError');
+const logger = require('../config/logger');
 
 exports.summarizeUrl = async (req, res, next) => {
     try {
