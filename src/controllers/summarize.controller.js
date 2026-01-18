@@ -9,12 +9,10 @@ exports.summarizeUrl = async (req, res, next) => {
         const { url, lang, style } = req.query;
         if (!url) return next(new AppError('URL required', 400));
 
-        // 1. Extract
+        // 1. Extract (Returns flat object: { url, markdown, title, author, ... })
         const extracted = await scraperService.extract(url);
-        logger.info(`Extracted keys: ${Object.keys(extracted).join(', ')}`);
 
-        // 2. Summarize & Generate Headlines (Parallel)
-        // Use Markdown if available (best for LLM), otherwise Text, then Content
+        // 2. Prepare Content (Priority: Markdown > Text > HTML)
         const contentToSummarize = extracted.markdown || extracted.textContent || extracted.content || "";
 
         if (!contentToSummarize.trim()) {
@@ -23,22 +21,24 @@ exports.summarizeUrl = async (req, res, next) => {
 
         logger.info(`Summarizing content length: ${contentToSummarize.length} chars`);
 
+        // 3. Parallel Execution: Summarize + Headlines
         const [summary, headlines] = await Promise.all([
             openaiService.summarize(contentToSummarize, lang || 'en', style || 'bullet'),
             openaiService.generateHeadlines(contentToSummarize)
         ]);
 
-        // 3. Clean Response for Summarize API (match structure)
+        // 4. Return Clean Response
         res.status(200).json({
             status: 'success',
             data: {
                 summary,
                 headlines,
-                original_length: contentToSummarize.length,
                 url: extracted.url,
                 title: extracted.title,
                 author: extracted.author,
-                published: extracted.published
+                published: extracted.published,
+                ttr: extracted.ttr,
+                original_length: contentToSummarize.length
             }
         });
     } catch (err) {
