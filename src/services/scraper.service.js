@@ -56,10 +56,9 @@ class ScraperService {
             strategy = 'playwright-readability';
         }
 
-        // LAYER 2: Playwright + Readability (If Layer 1 empty/short)
-        // We use a loose threshold (200 chars) to detect "JavaScript Required" or empty pages
-        if (!content || content.length < 200) {
-            logger.info(`Content insufficient (${content ? content.length : 0} chars). Switching to Layer 2 (Playwright) for ${url}`);
+        // 3. If empty or failed, use Playwright
+        if (!content || !content.textContent || content.textContent.length < 200) {
+            logger.info(`Content insufficient. Switching to Layer 2 (Playwright) for ${url}`);
             try {
                 content = await this.playwrightParse(url);
                 strategy = 'playwright-readability';
@@ -76,22 +75,19 @@ class ScraperService {
                     content = await this.playwrightParse(url, { proxy: process.env.PROXY_SERVER_URL });
                     strategy = 'playwright-proxy';
                 } else {
-                    // Start Layer 3 (Raw Fallback) logic happens inside parseHtml's failure path usually,
-                    // but if Playwright crashes entirely, we might re-throw.
-                    // However, we want to fail gracefully.
                     throw err;
                 }
             }
         }
 
         // Final Check
-        if (!content || content.length === 0) {
+        if (!content || !content.textContent || content.textContent.length === 0) {
             throw new AppError('Unable to extract meaningful content', 422);
         }
 
         const result = {
             url,
-            content,
+            ...content, // Spread the rich object (title, markdown, content, etc.)
             strategy,
             extractedAt: new Date().toISOString()
         };
