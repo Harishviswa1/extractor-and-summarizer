@@ -9,14 +9,14 @@ exports.summarizeUrl = async (req, res, next) => {
         const { url, lang, length, html } = req.query;
         if (!url) return next(new AppError('URL required', 400));
 
-        const targetLength = length ? parseInt(length, 10) : 0;
+        const targetLength = length ? Math.max(1, Math.min(parseInt(length, 10), 10)) : 0;
         const wantHtml = html === 'true' || html === '1';
 
         // 1. Extract
         const extracted = await scraperService.extract(url);
 
-        // 2. Prepare Content
-        const contentToSummarize = extracted.markdown || extracted.textContent || extracted.content || "";
+        // 2. Prepare Content - Prefer textContent over markdown
+        const contentToSummarize = extracted.textContent || extracted.markdown || extracted.content || "";
 
         if (!contentToSummarize.trim()) {
             return next(new AppError("Could not extract readable content from URL", 400));
@@ -28,27 +28,31 @@ exports.summarizeUrl = async (req, res, next) => {
             length: targetLength
         });
 
-        // 4. HTML Formatting (Optional)
+        // 4. HTML Formatting (Optional) - More robust
         if (wantHtml) {
-            summary = summary.replace(/\n\n/g, '</p><p>').replace(/\n/g, '<br>');
-            summary = `<p>${summary}</p>`;
+            summary = summary
+                .split('\n\n')
+                .filter(para => para.trim())
+                .map(para => `<p>${para.replace(/\n/g, '<br>')}</p>`)
+                .join('');
         }
 
         res.status(200).json({
             status: 'success',
             data: {
                 summary,
-                url: extracted.url,
-                title: extracted.title,
-                author: extracted.author,
-                published: extracted.published,
-                ttr: extracted.ttr
+                url: extracted.url || url,
+                title: extracted.title || '',
+                author: extracted.author || '',
+                published: extracted.published || '',
+                ttr: extracted.ttr || 0
             }
         });
     } catch (err) {
         next(err);
     }
 };
+
 
 exports.summarizeText = async (req, res, next) => {
     try {
