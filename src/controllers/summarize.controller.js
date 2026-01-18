@@ -7,6 +7,7 @@ const logger = require('../config/logger');
 const { chromium } = require('playwright');
 const { JSDOM } = require('jsdom');
 const { Readability } = require('@mozilla/readability');
+const axios = require('axios'); // Add axios
 
 exports.summarizeUrl = async (req, res, next) => {
     let browser = null;
@@ -17,44 +18,79 @@ exports.summarizeUrl = async (req, res, next) => {
         const targetLength = length ? Math.max(1, Math.min(parseInt(length, 10), 10)) : 0;
         const wantHtml = html === 'true' || html === '1';
 
-        logger.info(`Processing Summarize Request (Direct Playwright): ${url}`);
+        logger.info(`Processing Summarize Request: ${url}`);
 
-        // --- Embedded Extraction Logic ---
-        browser = await chromium.launch({
-            headless: true,
-            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
-        });
-        const page = await browser.newPage({
-            userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-        });
+        let contentToSummarize = null;
+        let title = '';
+        let author = '';
 
-        // Block resources for speed
-        await page.route('**/*.{png,jpg,jpeg,gif,svg,css,woff,woff2,mp4,webm,mp3,wav,ico,pdf,zip}', route => route.abort());
-        await page.route('**/*analytics*', route => route.abort());
-        await page.route('**/*ads*', route => route.abort());
+        // --- Fast Path: Fetch + Readability ---
+        try {
+            logger.info('Attempting Fast Fetch...');
+            const response = await axios.get(url, {
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+                },
+                timeout: 5000 // Short timeout for fast path
+            });
 
-        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
+            const doc = new JSDOM(response.data, { url });
+            const reader = new Readability(doc.window.document);
+            const article = reader.parse();
 
-        // Simple cleanup in browser context
-        await page.evaluate(() => {
-            document.querySelectorAll('script, style, noscript, iframe, svg, nav, footer, .ad, .ads, [role="alert"]').forEach(el => el.remove());
-        });
-
-        const htmlContent = await page.content();
-        await browser.close();
-        browser = null;
-
-        // Parse meaningful content
-        const doc = new JSDOM(htmlContent, { url });
-        const reader = new Readability(doc.window.document);
-        const article = reader.parse();
-
-        if (!article || !article.textContent || article.textContent.trim().length < 50) {
-            throw new AppError("Could not extract readable content from URL", 400);
+            if (article && article.textContent && article.textContent.trim().length > 200) {
+                contentToSummarize = article.textContent;
+                title = article.title;
+                author = article.byline;
+                logger.info('Fast Fetch Success!');
+            }
+        } catch (fetchErr) {
+            logger.warn(`Fast fetch failed or insufficient: ${fetchErr.message}`);
         }
 
-        const contentToSummarize = article.textContent;
-        // ---------------------------------
+        // --- Fallback: Playwright (if Fast Path failed) ---
+        if (!contentToSummarize) {
+            logger.info('Falling back to Playwright...');
+            browser = await chromium.launch({
+                headless: true,
+                args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
+            });
+            const page = await browser.newPage({
+                userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            });
+
+            // Block resources for speed
+            await page.route('**/*.{png,jpg,jpeg,gif,svg,css,woff,woff2,mp4,webm,mp3,wav,ico,pdf,zip}', route => route.abort());
+            await page.route('**/*analytics*', route => route.abort());
+            await page.route('**/*ads*', route => route.abort());
+
+            await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+
+            // Simple cleanup
+            await page.evaluate(() => {
+                document.querySelectorAll('script, style, noscript, iframe, svg, nav, footer, .ad, .ads, [role="alert"]').forEach(el => el.remove());
+            });
+
+            const htmlContent = await page.content();
+            await browser.close();
+            browser = null;
+
+            // Parse
+            const doc = new JSDOM(htmlContent, { url });
+            const reader = new Readability(doc.window.document);
+            const article = reader.parse();
+
+            if (article && article.textContent && article.textContent.trim().length > 50) {
+                contentToSummarize = article.textContent;
+                title = article.title;
+                author = article.byline;
+            }
+        }
+
+        if (!contentToSummarize || contentToSummarize.trim().length < 50) {
+            throw new AppError("Could not extract readable content from URL", 400);
+        }
 
         logger.info(`Summarizing ${contentToSummarize.length} chars...`);
 
@@ -79,9 +115,9 @@ exports.summarizeUrl = async (req, res, next) => {
             data: {
                 summary,
                 url: url,
-                title: article.title || '',
-                author: article.byline || '', // Readability uses 'byline'
-                published: '', // Simplified extraction doesn't check meta tags deeply unless we keep JSDOM meta logic
+                title: title || '',
+                author: author || '',
+                published: '',
                 ttr: Math.ceil(contentToSummarize.split(/\s+/).length / 200),
                 original_length: contentToSummarize.length
             }
