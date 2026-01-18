@@ -4,13 +4,15 @@ const rssService = require('../services/rss.service');
 const AppError = require('../utils/appError');
 const logger = require('../config/logger');
 
-const { chromium } = require('playwright');
+const puppeteer = require('puppeteer-extra');
+const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const { JSDOM } = require('jsdom');
 const { Readability } = require('@mozilla/readability');
-const axios = require('axios'); // Add axios
+const axios = require('axios');
+
+puppeteer.use(StealthPlugin());
 
 exports.summarizeUrl = async (req, res, next) => {
-    let browser = null;
     try {
         const { url, lang, length, html, style } = req.query;
         if (!url) return next(new AppError('URL required', 400));
@@ -50,7 +52,6 @@ exports.summarizeUrl = async (req, res, next) => {
             logger.warn(`Fast fetch failed or insufficient: ${fetchErr.message}`);
         }
 
-        // --- Fallback: Playwright (if Fast Path failed) ---
         // Helper to detect bot blocks
         const isBotCheck = (t, txt) => {
             const lowT = (t || '').toLowerCase();
@@ -58,61 +59,77 @@ exports.summarizeUrl = async (req, res, next) => {
             return lowT.includes('are you a robot') || lowT.includes('security check') || lowTxt.includes('unusual activity');
         };
 
-        // --- Fallback: Playwright (if Fast Path failed or was blocked) ---
+        // --- Fallback: Puppeteer Stealth ---
         if (!contentToSummarize || isBotCheck(title, contentToSummarize)) {
-            logger.info('Falling back to Playwright (Regular)...');
+            logger.info('Falling back to Puppeteer Stealth...');
 
-            const runPlaywright = async (targetUrl, useProxy = false) => {
-                let context = null;
-                let browserInstance = null; // Renamed to avoid conflict with outer 'browser'
+            const runPuppeteer = async (targetUrl, useProxy = false) => {
+                let pBrowser = null;
                 try {
-                    browserInstance = await chromium.launch({
-                        headless: true,
-                        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-blink-features=AutomationControlled'],
-                        proxy: useProxy && process.env.PROXY_SERVER_URL ? { server: process.env.PROXY_SERVER_URL } : undefined
-                    });
-                    context = await browserInstance.newContext({
-                        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-                        extraHTTPHeaders: { 'Referer': 'https://www.google.com/', 'Accept-Language': 'en-US,en;q=0.9' }
-                    });
-                    const page = await context.newPage();
-                    await page.addInitScript(() => Object.defineProperty(navigator, 'webdriver', { get: () => undefined }));
+                    const launchOptions = {
+                        headless: "new",
+                        args: [
+                            '--no-sandbox',
+                            '--disable-setuid-sandbox',
+                            '--disable-dev-shm-usage',
+                            '--disable-accelerated-2d-canvas',
+                            '--disable-gpu',
+                            '--window-size=1920,1080'
+                        ]
+                    };
 
-                    // Route blocking
-                    await page.route('**/*.{png,jpg,jpeg,gif,svg,css,woff,woff2,mp4,webm,mp3,wav,ico,pdf,zip}', route => route.abort());
-                    await page.route('**/*analytics*', route => route.abort());
-                    await page.route('**/*ads*', route => route.abort());
+                    if (useProxy && process.env.PROXY_SERVER_URL) {
+                        launchOptions.args.push(`--proxy-server=${process.env.PROXY_SERVER_URL}`);
+                    }
 
-                    await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-                    await page.evaluate(() => document.querySelectorAll('script, style, noscript, iframe, svg, nav, footer, .ad, .ads, [role="alert"]').forEach(el => el.remove()));
+                    pBrowser = await puppeteer.launch(launchOptions);
+                    const page = await pBrowser.newPage();
+
+                    // Resource blocking
+                    await page.setRequestInterception(true);
+                    page.on('request', (req) => {
+                        const rType = req.resourceType();
+                        if (['image', 'media', 'font', 'stylesheet'].includes(rType)) {
+                            req.abort();
+                        } else {
+                            req.continue();
+                        }
+                    });
+
+                    await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
+
+                    // Clean page
+                    await page.evaluate(() => {
+                        document.querySelectorAll('script, style, noscript, iframe, svg, nav, footer, .ad, .ads, [role="alert"]').forEach(el => el.remove());
+                    });
 
                     const content = await page.content();
-                    await browserInstance.close();
+                    await pBrowser.close();
 
                     const d = new JSDOM(content, { url: targetUrl });
                     const r = new Readability(d.window.document);
                     return r.parse();
                 } catch (e) {
-                    logger.warn(`Playwright run failed for ${targetUrl}: ${e.message}`);
-                    if (browserInstance) await browserInstance.close();
+                    if (pBrowser) await pBrowser.close();
+                    logger.warn(`Puppeteer Stealth failed for ${targetUrl}: ${e.message}`);
                     return null;
                 }
             };
 
-            // 2. Try Direct Playwright
-            let article = await runPlaywright(url);
+            // 2. Try Direct Puppeteer
+            let article = await runPuppeteer(url);
 
             // 3. Try Google Cache if blocked
             if (!article || !article.textContent || isBotCheck(article.title, article.textContent)) {
-                logger.info('Direct Playwright failed/blocked. Trying Google Cache...');
+                logger.info('Direct Puppeteer failed/blocked. Trying Google Cache...');
                 const cacheUrl = `http://webcache.googleusercontent.com/search?q=cache:${encodeURIComponent(url)}`;
-                article = await runPlaywright(cacheUrl);
+                article = await runPuppeteer(cacheUrl);
             }
 
             // 4. Try Proxy if available and still blocked
             if ((!article || !article.textContent || isBotCheck(article.title, article.textContent)) && process.env.PROXY_SERVER_URL) {
                 logger.info('Google Cache failed. Trying Proxy...');
-                article = await runPlaywright(url, true);
+                article = await runPuppeteer(url, true);
             }
 
             if (article && article.textContent && article.textContent.trim().length > 50) {
