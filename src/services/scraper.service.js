@@ -195,6 +195,9 @@ class ScraperService {
         const reader = new Readability(doc.window.document);
         const article = reader.parse();
 
+        // Helper: Collapse Internal Whitespace
+        const cleanText = (txt) => txt.replace(/\s+/g, ' ').trim();
+
         // 5. Construct Result
         if (article) {
             const markdown = turndownService.turndown(article.content);
@@ -202,26 +205,28 @@ class ScraperService {
 
             return {
                 ...metadata,
-                title: article.title || metadata.title, // Readability title often better
-                content: article.content, // Clean HTML
-                textContent: article.textContent.trim(), // Clean Text
+                title: article.title || metadata.title,
+                content: article.content, // HTML
+                textContent: cleanText(article.textContent), // Cleaned Text
                 markdown: markdown,
-                ttr: Math.ceil(wordCount / 200), // Time to Read (mins)
+                ttr: Math.ceil(wordCount / 200),
                 links: this.extractLinks(cleanHtml, url)
             };
         }
 
         // Fallback (Layer 3)
         logger.warn(`Readability failed for ${url}. Using Raw Fallback.`);
-        const rawText = $('body').text().replace(/\s+/g, ' ').trim();
+        // Improve Raw Text Cleaning: Decode entities & collapse spaces
+        const rawBody = $('body').text();
+        const cleanedRaw = cleanText(rawBody); // simple replace is usually enough for basic entities via cheerio .text()
 
-        if (rawText.length > 50) {
+        if (cleanedRaw.length > 50) {
             return {
                 ...metadata,
                 content: $('body').html(),
-                textContent: rawText,
+                textContent: cleanedRaw,
                 markdown: turndownService.turndown($('body').html()),
-                ttr: Math.ceil(rawText.split(/\s+/).length / 200),
+                ttr: Math.ceil(cleanedRaw.split(/\s+/).length / 200),
                 links: []
             };
         }
