@@ -33,9 +33,9 @@ class ScraperService {
     }
 
     async extract(url, jobId = null) {
-        // 1. Check Cache
         const cacheKey = `extract:${url}`;
         const cached = await redis.get(cacheKey);
+
         if (cached) {
             logger.info(`Cache hit for ${url}`);
             if (jobId) await this.updateJob(jobId, 'completed', JSON.parse(cached));
@@ -48,8 +48,6 @@ class ScraperService {
         let strategy = 'fetch-readability';
 
         try {
-            // LAYER 1: Fast Fetch + Readability
-            // Uses fetchAndParse which internally uses parseHtml (Rich Extraction)
             logger.info(`Attempting Layer 1 (Fetch) for ${url}`);
             content = await this.fetchAndParse(url);
         } catch (err) {
@@ -57,24 +55,27 @@ class ScraperService {
             strategy = 'playwright-readability';
         }
 
-        // LAYER 2: Playwright + Readability (If Layer 1 empty/short)
-        // We use a loose threshold (200 chars) to detect "JavaScript Required" or empty pages
         if (!content || !content.textContent || content.textContent.length < 200) {
             logger.info(`Content insufficient. Switching to Layer 2 (Playwright) for ${url}`);
+
             try {
                 content = await this.playwrightParse(url);
                 strategy = 'playwright-readability';
             } catch (err) {
                 logger.error(`Layer 2 failed for ${url}: ${err.message}`);
 
-                if (err.message.includes('ERR_NAME_NOT_RESOLVED') || err.message.includes('Invalid URL')) {
+                if (
+                    err.message.includes('ERR_NAME_NOT_RESOLVED') ||
+                    err.message.includes('Invalid URL')
+                ) {
                     throw new AppError('Invalid URL or Host Unreachable', 400);
                 }
 
-                // LAYER 2.5: Proxy Retry
                 if (process.env.PROXY_SERVER_URL) {
                     logger.info(`Retrying ${url} with proxy...`);
-                    content = await this.playwrightParse(url, { proxy: process.env.PROXY_SERVER_URL });
+                    content = await this.playwrightParse(url, {
+                        proxy: process.env.PROXY_SERVER_URL
+                    });
                     strategy = 'playwright-proxy';
                 } else {
                     throw err;
@@ -82,19 +83,17 @@ class ScraperService {
             }
         }
 
-        // Final Check
         if (!content || !content.textContent || content.textContent.length === 0) {
             throw new AppError('Unable to extract meaningful content', 422);
         }
 
         const result = {
             url,
-            ...content, // Spread the rich object (title, markdown, ttr, etc.)
-            strategy,
+            ...content,   // title, author, content, stats etc (UNCHANGED)
         };
 
-        // Cache result (24h)
         await redis.set(cacheKey, JSON.stringify(result), 'EX', 86400);
+
         if (jobId) await this.updateJob(jobId, 'completed', result);
 
         return result;
@@ -121,53 +120,33 @@ class ScraperService {
         return this.parseHtml(response.data, url);
     }
 
-    async playwrightParse(url, options = {}) {
-        const browser = await this.initBrowser();
+    async playwrightParse(url, opts = {}) {
+        const browser = await chromium.launch({
+            headless: true,
+            proxy: opts.proxy ? { server: opts.proxy } : undefined
+        });
 
-        try {
-            const context = await browser.newContext({
-                userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                viewport: { width: 1920, height: 1080 },
-                locale: 'en-US',
-                extraHTTPHeaders: {
-                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-                    'Accept-Language': 'en-US,en;q=0.9',
-                    'Upgrade-Insecure-Requests': '1'
-                },
-                proxy: options.proxy ? { server: options.proxy } : undefined
-            });
+        const page = await browser.newPage({
+            userAgent:
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        });
 
-            const page = await context.newPage();
+        await page.goto(url, { waitUntil: "networkidle", timeout: 60000 });
 
-            // Evasion: Undefine webdriver
-            await page.addInitScript(() => {
-                Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-            });
+        // Scroll to load lazy content
+        await page.evaluate(() => {
+            window.scrollTo(0, document.body.scrollHeight);
+        });
 
-            // Aggressive Resource Blocking for Speed
-            await page.route('**/*.{png,jpg,jpeg,gif,svg,css,woff,woff2,mp4,webm,mp3,wav,ico,pdf,zip}', route => route.abort());
-            await page.route('**/*analytics*', route => route.abort());
-            await page.route('**/*tracker*', route => route.abort());
-            await page.route('**/*ads*', route => route.abort());
+        await page.waitForTimeout(2000);
 
-            // Faster timeout, don't wait for network idle if possible
-            await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 });
+        const html = await page.content();
 
-            // Short wait for hydration only if needed
-            try {
-                await page.waitForSelector('body', { timeout: 3000 });
-            } catch (e) {
-                // Ignore timeout, proceed with what we have
-            }
+        await browser.close();
 
-            const html = await page.content();
-            await context.close();
-            return this.parseHtml(html, url);
-        } catch (e) {
-            // Ensure context closes on error
-            throw e;
-        }
+        return this.parseHtml(html, url);
     }
+
 
     parseHtml(html, url) {
         // 1. Basic Setup

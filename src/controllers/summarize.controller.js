@@ -9,7 +9,10 @@ exports.summarizeUrl = async (req, res, next) => {
         const { url, lang, length, html, style } = req.query;
         if (!url) return next(new AppError('URL required', 400));
 
-        const targetLength = length ? Math.max(1, Math.min(parseInt(length, 10), 10)) : 0;
+        const targetLength = length
+            ? Math.max(1, Math.min(parseInt(length, 10), 10))
+            : 0;
+
         const wantHtml = html === 'true' || html === '1';
 
         logger.info(`Processing Summarize Request: ${url}`);
@@ -17,9 +20,11 @@ exports.summarizeUrl = async (req, res, next) => {
         // 1. Extract
         const extracted = await scraperService.extract(url);
 
+        // 2. Get text WITHOUT changing structure
         let contentToSummarize =
             extracted.markdown ||
             extracted.textContent ||
+            extracted.content?.text ||
             extracted.content ||
             extracted.html ||
             extracted.rawHtml;
@@ -28,6 +33,7 @@ exports.summarizeUrl = async (req, res, next) => {
             throw new AppError("No content extracted", 400);
         }
 
+        // 3. Clean HTML safely
         contentToSummarize = contentToSummarize
             .replace(/<script[\s\S]*?<\/script>/gi, '')
             .replace(/<style[\s\S]*?<\/style>/gi, '')
@@ -39,25 +45,25 @@ exports.summarizeUrl = async (req, res, next) => {
             throw new AppError("Content too short to summarize", 422);
         }
 
-
         logger.info(`Summarizing ${contentToSummarize.length} chars...`);
 
-        // 3. Summarize
+        // 4. Summarize
         let summary = await openaiService.summarize(contentToSummarize, {
             lang: lang || 'en',
             length: targetLength,
             style: style || 'concise'
         });
 
-        // 4. HTML Formatting
+        // 5. HTML formatting
         if (wantHtml) {
             summary = summary
                 .split('\n\n')
-                .filter(para => para.trim())
-                .map(para => `<p>${para.replace(/\n/g, '<br>')}</p>`)
+                .filter(p => p.trim())
+                .map(p => `<p>${p.replace(/\n/g, '<br>')}</p>`)
                 .join('');
         }
 
+        // 6. Response (NO structure changes)
         res.status(200).json({
             status: 'success',
             data: {
@@ -73,10 +79,12 @@ exports.summarizeUrl = async (req, res, next) => {
                 original_length: contentToSummarize.length
             }
         });
+
     } catch (err) {
         next(err);
     }
 };
+
 
 
 exports.summarizeText = async (req, res, next) => {
