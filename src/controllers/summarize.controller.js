@@ -17,21 +17,28 @@ exports.summarizeUrl = async (req, res, next) => {
         // 1. Extract
         const extracted = await scraperService.extract(url);
 
-        // 2. Prepare Content strategy: Markdown > Text > HTML
-        // This is crucial: Wikipedia often has complex HTML that Turndown handles well, 
-        // but simple textContent might be cleaner for some sites.
-        let contentToSummarize = extracted.markdown;
-        if (!contentToSummarize || contentToSummarize.length < 50) {
-            contentToSummarize = extracted.textContent;
-        }
-        if (!contentToSummarize || contentToSummarize.length < 50) {
-            contentToSummarize = extracted.content;
+        let contentToSummarize =
+            extracted.markdown ||
+            extracted.textContent ||
+            extracted.content ||
+            extracted.html ||
+            extracted.rawHtml;
+
+        if (!contentToSummarize) {
+            throw new AppError("No content extracted", 400);
         }
 
-        if (!contentToSummarize || !contentToSummarize.trim()) {
-            logger.error(`Summarize failed: No content extracted for ${url}`);
-            return next(new AppError("Could not extract readable content from URL", 400));
+        contentToSummarize = contentToSummarize
+            .replace(/<script[\s\S]*?<\/script>/gi, '')
+            .replace(/<style[\s\S]*?<\/style>/gi, '')
+            .replace(/<[^>]+>/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim();
+
+        if (contentToSummarize.length < 20) {
+            throw new AppError("Content too short to summarize", 422);
         }
+
 
         logger.info(`Summarizing ${contentToSummarize.length} chars...`);
 
