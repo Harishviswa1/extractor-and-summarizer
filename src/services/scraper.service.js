@@ -289,18 +289,17 @@ class ScraperService {
         await redis.set(jobKey, JSON.stringify(data), 'EX', 3600);
         await redis.publish('job-updates', JSON.stringify({ jobId, ...data }));
     }
-}
 
-isBotCheck(title, text) {
-    const t = (title || '').toLowerCase();
-    const b = (text || '').toLowerCase();
-    return t.includes('are you a robot') ||
-        t.includes('attention required') ||
-        t.includes('access denied') ||
-        t.includes('security check') ||
-        b.includes('pardon our interruption') ||
-        b.includes('detected unusual activity');
-}
+    isBotCheck(title, text) {
+        const t = (title || '').toLowerCase();
+        const b = (text || '').toLowerCase();
+        return t.includes('are you a robot') ||
+            t.includes('attention required') ||
+            t.includes('access denied') ||
+            t.includes('security check') ||
+            b.includes('pardon our interruption') ||
+            b.includes('detected unusual activity');
+    }
 }
 
 module.exports = new ScraperService();
