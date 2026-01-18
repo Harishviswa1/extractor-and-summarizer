@@ -11,6 +11,7 @@ exports.summarizeUrl = async (req, res, next) => {
 
         // 1. Extract
         const extracted = await scraperService.extract(url);
+        logger.info(`Extracted keys: ${Object.keys(extracted).join(', ')}`);
 
         // 2. Summarize & Generate Headlines (Parallel)
         // Use Markdown if available (best for LLM), otherwise Text, then Content

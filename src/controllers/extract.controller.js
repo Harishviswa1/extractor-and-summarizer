@@ -23,6 +23,10 @@ exports.extractUrl = async (req, res, next) => {
 
         const result = await scraperService.extract(url, jobId);
 
+        // Remove internal system fields as requested by user
+        delete result.strategy;
+        delete result.extractedAt;
+
         res.status(200).json({
             status: 'success',
             data: result

@@ -142,12 +142,13 @@ class ScraperService {
         const turndownService = new TurndownService();
 
         // 2. Extract Metadata (BEFORE cleaning)
+        const jsonLd = this.extractJsonLd($);
         const metadata = {
-            title: $('meta[property="og:title"]').attr('content') || $('title').text() || '',
-            description: $('meta[property="og:description"]').attr('content') || $('meta[name="description"]').attr('content') || '',
-            author: $('meta[name="author"]').attr('content') || $('meta[property="article:author"]').attr('content') || '',
-            image: $('meta[property="og:image"]').attr('content') || $('meta[name="twitter:image"]').attr('content') || '',
-            published: $('meta[property="article:published_time"]').attr('content') || $('time').attr('datetime') || '',
+            title: $('meta[property="og:title"]').attr('content') || $('title').text() || jsonLd.headline || '',
+            description: $('meta[property="og:description"]').attr('content') || $('meta[name="description"]').attr('content') || jsonLd.description || '',
+            author: $('meta[name="author"]').attr('content') || $('meta[property="article:author"]').attr('content') || jsonLd.author || '',
+            image: $('meta[property="og:image"]').attr('content') || $('meta[name="twitter:image"]').attr('content') || jsonLd.image || '',
+            published: $('meta[property="article:published_time"]').attr('content') || $('time').attr('datetime') || $('meta[name="date"]').attr('content') || jsonLd.datePublished || '',
             source: new URL(url).hostname.replace('www.', ''),
             favicon: `https://www.google.com/s2/favicons?domain=${new URL(url).hostname}`
         };
@@ -207,6 +208,28 @@ class ScraperService {
             }
         });
         return [...new Set(links)]; // Unique links
+    }
+
+    extractJsonLd($) {
+        let data = {};
+        $('script[type="application/ld+json"]').each((i, el) => {
+            try {
+                const json = JSON.parse($(el).html());
+                // Handle array or object
+                const items = Array.isArray(json) ? json : [json];
+
+                for (const item of items) {
+                    if (item['@type'] === 'Article' || item['@type'] === 'NewsArticle' || item['@type'] === 'BlogPosting') {
+                        data.headline = item.headline;
+                        data.description = item.description;
+                        data.image = item.image ? (typeof item.image === 'string' ? item.image : item.image.url) : null;
+                        data.datePublished = item.datePublished || item.dateCreated;
+                        data.author = item.author ? (typeof item.author === 'string' ? item.author : item.author.name) : null;
+                    }
+                }
+            } catch (e) { /* ignore parse error */ }
+        });
+        return data;
     }
 
     async updateJob(jobId, status, result = null) {
