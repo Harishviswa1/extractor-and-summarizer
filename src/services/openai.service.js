@@ -80,16 +80,24 @@ class OpenAIService {
     }
 
     async compare(text1, text2) {
-        const t1 = (text1 || '').substring(0, 2000);
-        const t2 = (text2 || '').substring(0, 2000);
+        const t1 = (text1 || '').substring(0, 3000);
+        const t2 = (text2 || '').substring(0, 3000);
 
         const prompt = `Compare the following two articles. Identify biased language, contradictions, and tone differences.
+        
+        Finally, determine **which article is better** based on objective reporting, depth, and clarity.
         
         Article 1: ${t1}...
         
         Article 2: ${t2}...
         
-        Output JSON: { "bias_analysis": "...", "contradictions": ["..."], "tone_comparison": "..." }`;
+        Output JSON: { 
+            "bias_analysis": "...", 
+            "contradictions": ["..."], 
+            "tone_comparison": "...",
+            "best_article": "Article 1" or "Article 2",
+            "reasoning": "Why it is better..."
+        }`;
 
         try {
             const completion = await this.openai.chat.completions.create({

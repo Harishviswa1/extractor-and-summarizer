@@ -144,11 +144,21 @@ class ScraperService {
                 Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
             });
 
-            // Block resources
-            await page.route('**/*.{png,jpg,jpeg,gif,svg,css,woff,woff2}', route => route.abort());
+            // Aggressive Resource Blocking for Speed
+            await page.route('**/*.{png,jpg,jpeg,gif,svg,css,woff,woff2,mp4,webm,mp3,wav,ico,pdf,zip}', route => route.abort());
+            await page.route('**/*analytics*', route => route.abort());
+            await page.route('**/*tracker*', route => route.abort());
+            await page.route('**/*ads*', route => route.abort());
 
-            await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
-            await page.waitForTimeout(2000); // Wait for hydration
+            // Faster timeout, don't wait for network idle if possible
+            await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 });
+
+            // Short wait for hydration only if needed
+            try {
+                await page.waitForSelector('body', { timeout: 3000 });
+            } catch (e) {
+                // Ignore timeout, proceed with what we have
+            }
 
             const html = await page.content();
             await context.close();
