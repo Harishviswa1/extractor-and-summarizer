@@ -12,7 +12,9 @@ exports.summarizeUrl = async (req, res, next) => {
         const extracted = await scraperService.extract(url);
 
         // 2. Summarize
-        const summary = await openaiService.summarize(extracted.content, lang || 'en', style || 'bullet');
+        const contentToSummarize = extracted.content || '';
+        logger.info(`Summarizing content length: ${contentToSummarize.length} chars`);
+        const summary = await openaiService.summarize(contentToSummarize, lang || 'en', style || 'bullet');
 
         res.status(200).json({
             status: 'success',

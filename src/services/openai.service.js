@@ -42,8 +42,9 @@ class OpenAIService {
             // Translate specific errors
             if (error.status === 401) throw new AppError('Invalid OpenAI API Key', 500);
             if (error.status === 429) throw new AppError('OpenAI Rate Limit Exceeded', 429);
+            if (error.status === 400) throw new AppError(`OpenAI Bad Request: ${error.message}`, 400);
 
-            throw new AppError('AI Service currently unavailable', 503);
+            throw new AppError(`AI Service functionality failed: ${error.message}`, 502);
         }
     }
 
