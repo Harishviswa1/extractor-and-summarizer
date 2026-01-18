@@ -91,7 +91,6 @@ class ScraperService {
             url,
             ...content, // Spread the rich object (title, markdown, ttr, etc.)
             strategy,
-            extractedAt: new Date().toISOString()
         };
 
         // Cache result (24h)
