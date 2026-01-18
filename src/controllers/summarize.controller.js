@@ -15,10 +15,15 @@ exports.summarizeUrl = async (req, res, next) => {
         // 1. Extract
         const extracted = await scraperService.extract(url);
 
-        // 2. Prepare Content - Prefer textContent over markdown
-        const contentToSummarize = extracted.textContent || extracted.markdown || extracted.content || "";
+        logger.info(`Summarize Debug - URL: ${url}`);
+        logger.info(`Extracted keys: ${Object.keys(extracted).join(', ')}`);
+        logger.info(`Lengths - MD: ${extracted.markdown?.length}, Text: ${extracted.textContent?.length}, HTML: ${extracted.content?.length}`);
+
+        // 2. Prepare Content - Prefer Markdown (Consistency with Compare API)
+        const contentToSummarize = extracted.markdown || extracted.textContent || extracted.content || "";
 
         if (!contentToSummarize.trim()) {
+            logger.warn(`Summarize failed: Content empty for ${url}`);
             return next(new AppError("Could not extract readable content from URL", 400));
         }
 
