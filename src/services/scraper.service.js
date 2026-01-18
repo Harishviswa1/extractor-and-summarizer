@@ -32,36 +32,73 @@ class ScraperService {
         }
     }
 
-    async extract(url) {
-        try {
-            const res = await axios.get(url, {
-                headers: {
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-                },
-                timeout: 15000
-            });
-
-            const dom = new JSDOM(res.data, { url });
-            const reader = new Readability(dom.window.document);
-            const article = reader.parse();
-
-            if (!article || !article.textContent) {
-                throw new Error("No readable content found");
-            }
-
-            return {
-                url,
-                title: article.title,
-                content: article.textContent,
-                markdown: article.textContent, // User requested textContent as markdown
-                author: null,
-                published: null,
-                original_length: article.textContent.length
-            };
-        } catch (err) {
-            logger.error("Scraper error:", err.message);
-            throw new Error("Failed to extract article content");
+    async extract(url, jobId = null) {
+        // 1. Check Cache
+        const cacheKey = `extract:${url}`;
+        const cached = await redis.get(cacheKey);
+        if (cached) {
+            logger.info(`Cache hit for ${url}`);
+            if (jobId) await this.updateJob(jobId, 'completed', JSON.parse(cached));
+            return JSON.parse(cached);
         }
+
+        if (jobId) await this.updateJob(jobId, 'fetching');
+
+        let content = null;
+        let strategy = 'fetch-readability';
+
+        try {
+            // LAYER 1: Fast Fetch + Readability
+            // Uses fetchAndParse which internally uses parseHtml (Rich Extraction)
+            logger.info(`Attempting Layer 1 (Fetch) for ${url}`);
+            content = await this.fetchAndParse(url);
+        } catch (err) {
+            logger.warn(`Layer 1 failed for ${url}: ${err.message}. Switching to Layer 2.`);
+            strategy = 'playwright-readability';
+        }
+
+        // LAYER 2: Playwright + Readability (If Layer 1 empty/short)
+        // We use a loose threshold (200 chars) to detect "JavaScript Required" or empty pages
+        if (!content || !content.textContent || content.textContent.length < 200) {
+            logger.info(`Content insufficient. Switching to Layer 2 (Playwright) for ${url}`);
+            try {
+                content = await this.playwrightParse(url);
+                strategy = 'playwright-readability';
+            } catch (err) {
+                logger.error(`Layer 2 failed for ${url}: ${err.message}`);
+
+                if (err.message.includes('ERR_NAME_NOT_RESOLVED') || err.message.includes('Invalid URL')) {
+                    throw new AppError('Invalid URL or Host Unreachable', 400);
+                }
+
+                // LAYER 2.5: Proxy Retry
+                if (process.env.PROXY_SERVER_URL) {
+                    logger.info(`Retrying ${url} with proxy...`);
+                    content = await this.playwrightParse(url, { proxy: process.env.PROXY_SERVER_URL });
+                    strategy = 'playwright-proxy';
+                } else {
+                    throw err;
+                }
+            }
+        }
+
+        // Final Check
+        if (!content || !content.textContent || content.textContent.length === 0) {
+            throw new AppError('Unable to extract meaningful content', 422);
+        }
+
+        const result = {
+            url,
+            ...content, // Spread the rich object (title, markdown, ttr, etc.)
+            strategy,
+            extractedAt: new Date().toISOString()
+        };
+
+        // Cache result (24h)
+        await redis.set(cacheKey, JSON.stringify(result), 'EX', 86400);
+        if (jobId) await this.updateJob(jobId, 'completed', result);
+
+        return result;
     }
 
     async fetchAndParse(url) {
