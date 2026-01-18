@@ -6,34 +6,43 @@ const logger = require('../config/logger');
 
 exports.summarizeUrl = async (req, res, next) => {
     try {
-        const { url, lang, length, html } = req.query;
+        const { url, lang, length, html, style } = req.query;
         if (!url) return next(new AppError('URL required', 400));
 
         const targetLength = length ? Math.max(1, Math.min(parseInt(length, 10), 10)) : 0;
         const wantHtml = html === 'true' || html === '1';
 
+        logger.info(`Processing Summarize Request: ${url}`);
+
         // 1. Extract
         const extracted = await scraperService.extract(url);
 
-        logger.info(`Summarize Debug - URL: ${url}`);
-        logger.info(`Extracted keys: ${Object.keys(extracted).join(', ')}`);
-        logger.info(`Lengths - MD: ${extracted.markdown?.length}, Text: ${extracted.textContent?.length}, HTML: ${extracted.content?.length}`);
+        // 2. Prepare Content strategy: Markdown > Text > HTML
+        // This is crucial: Wikipedia often has complex HTML that Turndown handles well, 
+        // but simple textContent might be cleaner for some sites.
+        let contentToSummarize = extracted.markdown;
+        if (!contentToSummarize || contentToSummarize.length < 50) {
+            contentToSummarize = extracted.textContent;
+        }
+        if (!contentToSummarize || contentToSummarize.length < 50) {
+            contentToSummarize = extracted.content;
+        }
 
-        // 2. Prepare Content - Prefer Markdown (Consistency with Compare API)
-        const contentToSummarize = extracted.markdown || extracted.textContent || extracted.content || "";
-
-        if (!contentToSummarize.trim()) {
-            logger.warn(`Summarize failed: Content empty for ${url}`);
+        if (!contentToSummarize || !contentToSummarize.trim()) {
+            logger.error(`Summarize failed: No content extracted for ${url}`);
             return next(new AppError("Could not extract readable content from URL", 400));
         }
+
+        logger.info(`Summarizing ${contentToSummarize.length} chars...`);
 
         // 3. Summarize
         let summary = await openaiService.summarize(contentToSummarize, {
             lang: lang || 'en',
-            length: targetLength
+            length: targetLength,
+            style: style || 'concise'
         });
 
-        // 4. HTML Formatting (Optional) - More robust
+        // 4. HTML Formatting
         if (wantHtml) {
             summary = summary
                 .split('\n\n')
@@ -50,7 +59,11 @@ exports.summarizeUrl = async (req, res, next) => {
                 title: extracted.title || '',
                 author: extracted.author || '',
                 published: extracted.published || '',
-                ttr: extracted.ttr || 0
+                ttr: extracted.ttr || 0,
+                image: extracted.image,
+                favicon: extracted.favicon,
+                source: extracted.source,
+                original_length: contentToSummarize.length
             }
         });
     } catch (err) {

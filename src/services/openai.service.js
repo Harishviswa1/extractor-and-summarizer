@@ -27,20 +27,28 @@ class OpenAIService {
 
     async summarize(text, options = {}) {
         const { lang = 'en', style = 'concise', length = 0 } = options;
+
+        // Validation
+        if (!text || typeof text !== 'string' || text.trim().length === 0) {
+            throw new AppError('No text provided for summarization', 400);
+        }
+
         const prompt = this.buildSummarizePrompt(text, lang, style, length);
 
         try {
             const completion = await this.openai.chat.completions.create({
                 messages: [{ role: 'user', content: prompt }],
                 model: this.model,
-                max_tokens: 1000,
-                temperature: 0.5,
+                max_tokens: 1500, // Increased for longer summaries
+                temperature: 0.4, // Slightly clearer output
             });
 
-            return completion.choices[0].message.content;
+            const content = completion.choices[0].message.content;
+            if (!content) throw new Error('OpenAI returned empty content');
+
+            return content;
         } catch (error) {
             logger.error('OpenAI Error:', error);
-            // Translate specific errors
             if (error.status === 401) throw new AppError('Invalid OpenAI API Key', 500);
             if (error.status === 429) throw new AppError('OpenAI Rate Limit Exceeded', 429);
             if (error.status === 400) throw new AppError(`OpenAI Bad Request: ${error.message}`, 400);
