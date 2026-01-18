@@ -138,32 +138,76 @@ class ScraperService {
     }
 
     parseHtml(html, url) {
-        // Pre-clean noisy elements before Readability runs
-        // This helps Readability focus on the actual article
+        // 1. Basic Setup
         const $ = cheerio.load(html);
-        $('script, style, noscript, iframe, svg, nav, footer, .ad, .ads, .social-share, .cookie-consent, [role="alert"]').remove();
+        const turndownService = new TurndownService();
 
-        // Update HTML for JSDOM
+        // 2. Extract Metadata (BEFORE cleaning)
+        const metadata = {
+            title: $('meta[property="og:title"]').attr('content') || $('title').text() || '',
+            description: $('meta[property="og:description"]').attr('content') || $('meta[name="description"]').attr('content') || '',
+            author: $('meta[name="author"]').attr('content') || $('meta[property="article:author"]').attr('content') || '',
+            image: $('meta[property="og:image"]').attr('content') || $('meta[name="twitter:image"]').attr('content') || '',
+            published: $('meta[property="article:published_time"]').attr('content') || $('time').attr('datetime') || '',
+            source: new URL(url).hostname.replace('www.', ''),
+            favicon: `https://www.google.com/s2/favicons?domain=${new URL(url).hostname}`
+        };
+
+        // 3. Clean for Readability
+        $('script, style, noscript, iframe, svg, nav, footer, .ad, .ads, .social-share, .cookie-consent, [role="alert"]').remove();
         const cleanHtml = $.html();
 
+        // 4. Readability Parse
         const doc = new JSDOM(cleanHtml, { url });
         const reader = new Readability(doc.window.document);
         const article = reader.parse();
 
-        // Strategy A: Mozilla Readability (High Quality)
-        if (article && article.textContent && article.textContent.trim().length > 100) {
-            logger.info(`Readability success for ${url}`);
-            return article.textContent.trim();
+        // 5. Construct Result
+        if (article) {
+            const markdown = turndownService.turndown(article.content);
+            const wordCount = article.textContent.split(/\s+/).length;
+
+            return {
+                ...metadata,
+                title: article.title || metadata.title, // Readability title often better
+                content: article.content, // Clean HTML
+                textContent: article.textContent.trim(), // Clean Text
+                markdown: markdown,
+                ttr: Math.ceil(wordCount / 200), // Time to Read (mins)
+                links: this.extractLinks(cleanHtml, url)
+            };
         }
 
-        // Strategy B: Raw Text Fallback (Layer 3)
-        // If Readability fails to find a structured article, dump the body text.
-        logger.warn(`Readability returned null/empty for ${url}. Using Raw Body fallback.`);
+        // Fallback (Layer 3)
+        logger.warn(`Readability failed for ${url}. Using Raw Fallback.`);
+        const rawText = $('body').text().replace(/\s+/g, ' ').trim();
 
-        let rawText = $('body').text().replace(/\s+/g, ' ').trim();
+        if (rawText.length > 50) {
+            return {
+                ...metadata,
+                content: $('body').html(),
+                textContent: rawText,
+                markdown: turndownService.turndown($('body').html()),
+                ttr: Math.ceil(rawText.split(/\s+/).length / 200),
+                links: []
+            };
+        }
 
-        // If raw extraction is also tiny, return null to trigger Playwright (if not already tried) or error
-        return rawText.length > 50 ? rawText : null;
+        return null;
+    }
+
+    extractLinks(html, baseUrl) {
+        const $ = cheerio.load(html);
+        const links = [];
+        $('a').each((i, el) => {
+            const href = $(el).attr('href');
+            if (href && !href.startsWith('#') && !href.startsWith('javascript:')) {
+                try {
+                    links.push(new URL(href, baseUrl).href);
+                } catch (e) { /* ignore invalid */ }
+            }
+        });
+        return [...new Set(links)]; // Unique links
     }
 
     async updateJob(jobId, status, result = null) {

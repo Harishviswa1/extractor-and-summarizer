@@ -12,15 +12,21 @@ exports.summarizeUrl = async (req, res, next) => {
         const extracted = await scraperService.extract(url);
 
         // 2. Summarize
-        const contentToSummarize = extracted.content || '';
+        // Use Markdown if available (best for LLM), otherwise Text, then Content
+        const contentToSummarize = extracted.markdown || extracted.textContent || extracted.content || '';
         logger.info(`Summarizing content length: ${contentToSummarize.length} chars`);
         const summary = await openaiService.summarize(contentToSummarize, lang || 'en', style || 'bullet');
 
+        // 3. Clean Response for Summarize API (match structure)
         res.status(200).json({
             status: 'success',
             data: {
                 summary,
-                original_length: (extracted.content || '').length
+                original_length: contentToSummarize.length,
+                url: extracted.url,
+                title: extracted.title,
+                author: extracted.author,
+                published: extracted.published
             }
         });
     } catch (err) {
@@ -54,7 +60,11 @@ exports.compare = async (req, res, next) => {
             scraperService.extract(url2)
         ]);
 
-        const comparison = await openaiService.compare(r1.content, r2.content);
+        // Use Markdown or Text for comparison to save tokens and improve quality
+        const t1 = r1.markdown || r1.textContent || r1.content;
+        const t2 = r2.markdown || r2.textContent || r2.content;
+
+        const comparison = await openaiService.compare(t1, t2);
 
         res.status(200).json({
             status: 'success',
@@ -72,7 +82,8 @@ exports.headlines = async (req, res, next) => {
 
         if (url && !content) {
             const r = await scraperService.extract(url);
-            content = r.content;
+            // Use Markdown or Text for headlines to save tokens
+            content = r.markdown || r.textContent || r.content;
         }
 
         if (!content) return next(new AppError('Text or URL required', 400));
