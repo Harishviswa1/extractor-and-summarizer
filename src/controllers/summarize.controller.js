@@ -16,7 +16,7 @@ exports.summarizeUrl = async (req, res, next) => {
         const extracted = await scraperService.extract(url);
 
         // 2. Prepare Content
-        const contentToSummarize = extracted.markdown || extracted.textContent || extracted.content || "";
+        const contentToSummarize = extracted.data.textContent || "";
 
         if (!contentToSummarize.trim()) {
             return next(new AppError("Could not extract readable content from URL", 400));
