@@ -20,21 +20,28 @@ exports.summarizeUrl = async (req, res, next) => {
         // 1. Extract
         const extracted = await scraperService.extract(url);
 
-        // 2. Get text WITHOUT changing structure
-        let contentToSummarize =
-            extracted.data.data.content.text
-        extracted.markdown ||
-            extracted.textContent ||
-            extracted.content?.text ||
-            extracted.content ||
-            extracted.html ||
-            extracted.rawHtml;
+        // 2. Prepare Content strategy: Markdown > Text > HTML
+        let contentToSummarize = extracted.markdown;
 
-        if (!contentToSummarize) {
-            throw new AppError("No content extracted", 400);
+        if (!contentToSummarize || contentToSummarize.length < 50) {
+            contentToSummarize = extracted.textContent;
+        }
+        if (!contentToSummarize || contentToSummarize.length < 50) {
+            // Check if HTML content exists and is string
+            if (typeof extracted.content === 'string') {
+                contentToSummarize = extracted.content;
+            } else if (extracted.content && extracted.content.text) {
+                // Handle case where content might be nested object (though scraper service returns flat)
+                contentToSummarize = extracted.content.text;
+            }
         }
 
-        // 3. Clean HTML safely
+        if (!contentToSummarize || typeof contentToSummarize !== 'string' || !contentToSummarize.trim()) {
+            logger.error(`Summarize failed: No content extracted for ${url}`);
+            return next(new AppError("Could not extract readable content from URL", 400));
+        }
+
+        // 3. Clean Content
         contentToSummarize = contentToSummarize
             .replace(/<script[\s\S]*?<\/script>/gi, '')
             .replace(/<style[\s\S]*?<\/style>/gi, '')
