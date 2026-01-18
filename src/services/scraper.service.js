@@ -33,7 +33,8 @@ class ScraperService {
     }
 
     async extract(url, jobId = null) {
-        const cacheKey = `extract:${url}`;
+        // Cache Busting: Changed to v2 to invalidate old nested structures
+        const cacheKey = `extract:v2:${url}`;
         const cached = await redis.get(cacheKey);
 
         if (cached) {

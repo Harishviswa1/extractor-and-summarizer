@@ -139,9 +139,15 @@ class OpenAIService {
         // Guard against undefined text
         const safeText = (text || '').substring(0, 15000); // 15k chars context
 
-        return `Analyze the following text and translate the result to ${lang}. ${instruction}
+        // Optimized Prompt: Removes generic "Translate to" message which causes artifacts
+        return `
+        Task: Summarize the content below in ${lang} language.
+        Style: ${instruction}
+        Constraints: 
+        - Ignore navigation menus, footers, "Read More" links, and promotional text.
+        - Do NOT include phrases like "Translation to English" or "Summary:". Just return the content.
         
-        Text:
+        Content:
         ${safeText} 
         `;
     }
