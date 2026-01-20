@@ -233,8 +233,8 @@ exports.headlines = async (req, res, next) => {
 
         if (url && !content) {
             const r = await scraperService.extract(url);
-            // Use Markdown or Text for headlines to save tokens
-            content = r.markdown || r.textContent || r.content;
+            // Use textContent for headlines to save tokens (faster/cheaper) and rely on truncation
+            content = r.textContent || r.markdown || r.content;
         }
 
         if (!content) return next(new AppError('Text or URL required', 400));
