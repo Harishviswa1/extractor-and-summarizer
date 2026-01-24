@@ -186,42 +186,43 @@ class OpenAIService {
 
     async rewrite(text, options = {}) {
         if (!text) throw new AppError('Text is required for rewriting', 400);
-        const { format = 'general', tone = 'modern', audience = 'general', length = 'medium' } = options;
 
-        let systemInstruction = `You are an expert editor and content strategist.`;
-        let userPrompt = '';
+        // Dynamic Parameters with Defaults
+        const {
+            format = 'general',
+            tone = 'modern',
+            audience = 'general',
+            length = 'medium',
+            lang = 'en'  // New: Language Support
+        } = options;
 
-        if (format === 'linkedin') {
-            userPrompt = `Rewrite the following text as a high-engagement viral LinkedIn post.
-            
-            Guidelines:
-            - Use a catchy "Hook" in the first line.
-            - Use short, punchy paragraphs (1-2 sentences max).
-            - Use bullet points if listing items.
-            - Tone: ${tone}.
-            - Audience: ${audience}.
-            - End with a thought-provoking question "Call to Action".
-            - Include 3-5 relevant hashtags at the bottom.
-            
-            Output JSON: { "post": "..." }
-            
-            Text: ${text.substring(0, 10000)}`;
-        } else {
-            userPrompt = `Rewrite the text below.
-            
-            target_format: ${format}
-            target_tone: ${tone}
-            target_audience: ${audience}
-            target_length: ${length}
-            
-            Instructions:
-            - Preserve core meaning but completely adapt the style.
-            - Ensure high clarity and flow.
-            
-            Output JSON: { "rewritten_text": "..." }
+        // Latency Optimization: Truncate input to avoid massive context (approx 15k chars is ~3k tokens)
+        // This significantly reduces processing time for long articles.
+        const safeText = text.substring(0, 15000);
 
-            Text: ${text.substring(0, 10000)}`;
-        }
+        const systemInstruction = `You are an expert editor and content strategist. 
+        Your task is to rewrite the provided content into a specific format, tone, and language.`;
+
+        const userPrompt = `
+        Content to Rewrite:
+        "${safeText}..."
+
+        Target Configuration:
+        - Format/Style: ${format} (e.g. LinkedIn, Tweet, Blog, Email, etc.)
+        - Tone: ${tone}
+        - Audience: ${audience}
+        - Length: ${length}
+        - Language: ${lang}
+
+        Instructions:
+        1. Adaptation: Completely adapt the structure and vocabulary to fit the '${format}' format.
+        2. Language: Output STRICTLY in ${lang}.
+        3. Formatting: Use appropriate formatting (bullet points, emojis for social, paragraphs for blogs).
+        4. Viral Elements: If format implies social media, include a hook and 3-5 relevant hashtags.
+        
+        Output:
+        Return valid JSON with a single key "rewritten_text" containing the result.
+        `;
 
         try {
             const completion = await this.openai.chat.completions.create({
@@ -232,9 +233,13 @@ class OpenAIService {
                 model: this.model,
                 response_format: { type: "json_object" },
                 max_tokens: 2000,
-                temperature: 0.7, // Higher creativity for rewriting
+                temperature: 0.7,
             });
-            return JSON.parse(completion.choices[0].message.content);
+
+            const content = completion.choices[0].message.content;
+            if (!content) throw new Error('Empty response from AI');
+
+            return JSON.parse(content);
         } catch (error) {
             logger.error('Rewrite Error:', error);
             throw new AppError('Rewrite failed', 503);

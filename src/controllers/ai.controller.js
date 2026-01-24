@@ -3,29 +3,32 @@ const scraperService = require('../services/scraper.service');
 const AppError = require('../utils/appError');
 const { v4: uuidv4 } = require('uuid');
 
-// Helper to get text from URL or Body
+// Helper to get text from URL or Body (Optimized)
 const getContent = async (req) => {
     const { url, text } = req.body;
 
     // Prioritize URL extraction as requested
     if (url) {
-        const result = await scraperService.extract(url, uuidv4()); // generate temp job id
-        // Prefer markdown for AI tasks as it's cleaner, fallback to textContent
-        return result.markdown || result.textContent || result.content;
+        // Use ScraperService (Cached extraction)
+        const result = await scraperService.extract(url, uuidv4());
+
+        // Payload Optimization: Use Markdown (Cleanest for AI) > TextContent > Content
+        const content = result.markdown || result.textContent || result.content;
+
+        if (!content || content.length < 50) {
+            throw new AppError('Extracted content is too short or empty', 422);
+        }
+        return content;
     }
 
-    // Fallback to text if allowed (though prompt imply URL focus, flexibility is good)
+    // Fallback to text
     return text;
 };
 
 exports.analyze = async (req, res, next) => {
     try {
-        const { url } = req.body;
-        if (!url) return next(new AppError('URL is required', 400));
-
         const content = await getContent(req);
-        if (!content) return next(new AppError('Could not extract content from URL', 400));
-
+        // Analyze logic remains same, extraction is now optimized
         const analysis = await openaiService.analyze(content);
 
         res.status(200).json({
@@ -39,13 +42,19 @@ exports.analyze = async (req, res, next) => {
 
 exports.rewrite = async (req, res, next) => {
     try {
-        const { url, format, tone, audience, length } = req.body;
-        if (!url) return next(new AppError('URL is required', 400));
+        // Accept dynamic params
+        const { format, tone, audience, length, lang } = req.body;
 
         const content = await getContent(req);
-        if (!content) return next(new AppError('Could not extract content from URL', 400));
 
-        const result = await openaiService.rewrite(content, { format, tone, audience, length });
+        // Pass all options to service
+        const result = await openaiService.rewrite(content, {
+            format: format || 'concise', // Default handled in service too, but good to be explicit
+            tone,
+            audience,
+            length,
+            lang: lang || 'en' // Default language
+        });
 
         res.status(200).json({
             status: 'success',
