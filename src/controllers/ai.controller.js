@@ -27,9 +27,24 @@ const getContent = async (req) => {
 
 exports.analyze = async (req, res, next) => {
     try {
+        const { url } = req.body;
+
+        // 1. Check Cache
+        if (url) {
+            const cacheKey = `analyze:v1:${url}`;
+            const cached = await redis.get(cacheKey);
+            if (cached) {
+                return res.status(200).json({ status: 'success', data: JSON.parse(cached) });
+            }
+        }
+
         const content = await getContent(req);
-        // Analyze logic remains same, extraction is now optimized
         const analysis = await openaiService.analyze(content);
+
+        // 2. Set Cache
+        if (url) {
+            await redis.set(`analyze:v1:${url}`, JSON.stringify(analysis), 'EX', 86400);
+        }
 
         res.status(200).json({
             status: 'success',
@@ -43,7 +58,22 @@ exports.analyze = async (req, res, next) => {
 exports.rewrite = async (req, res, next) => {
     try {
         // Accept dynamic params
-        const { format, tone, audience, length, lang } = req.body;
+        const { url, format, tone, audience, length, lang } = req.body;
+
+        // 1. Check Cache
+        let cacheKey = null;
+        if (url) {
+            // Key includes all parameters affecting output
+            const safeFormat = format || 'concise';
+            const safeLang = lang || 'en';
+            // Include other params to avoid collisions
+            cacheKey = `rewrite:v1:${url}:${safeFormat}:${safeLang}:${length || 'med'}`;
+
+            const cached = await redis.get(cacheKey);
+            if (cached) {
+                return res.status(200).json({ status: 'success', data: JSON.parse(cached) });
+            }
+        }
 
         const content = await getContent(req);
 
