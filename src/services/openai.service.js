@@ -151,6 +151,95 @@ class OpenAIService {
         ${safeText} 
         `;
     }
+    async analyze(text) {
+        if (!text) throw new AppError('Text is required for analysis', 400);
+
+        // "Standard Analysis Data" Prompt
+        const prompt = `Perform a comprehensive analysis of the text below. return valid strict JSON.
+        
+        Output Structure:
+        {
+            "sentiment": { "score": 0.0 to 1.0, "label": "Positive/Negative/Neutral" },
+            "bias_check": { "is_biased": boolean, "bias_type": "political/commercial/none", "description": "short explanation" },
+            "key_entities": [ { "name": "...", "type": "Person/Org/Loc" } ],
+            "readability": { "flesch_kincaid_grade": number, "level": "Easy/Medium/Hard" },
+            "category": "Technology/Politics/Health/...",
+            "summary_sentence": "One sentence overview."
+        }
+
+        Text: ${text.substring(0, 10000)}`;
+
+        try {
+            const completion = await this.openai.chat.completions.create({
+                messages: [{ role: 'user', content: prompt }],
+                model: this.model,
+                response_format: { type: "json_object" },
+                max_tokens: 800,
+                temperature: 0.3,
+            });
+            return JSON.parse(completion.choices[0].message.content);
+        } catch (error) {
+            logger.error('Analyze Error:', error);
+            throw new AppError('Analysis failed', 503);
+        }
+    }
+
+    async rewrite(text, options = {}) {
+        if (!text) throw new AppError('Text is required for rewriting', 400);
+        const { format = 'general', tone = 'modern', audience = 'general', length = 'medium' } = options;
+
+        let systemInstruction = `You are an expert editor and content strategist.`;
+        let userPrompt = '';
+
+        if (format === 'linkedin') {
+            userPrompt = `Rewrite the following text as a high-engagement viral LinkedIn post.
+            
+            Guidelines:
+            - Use a catchy "Hook" in the first line.
+            - Use short, punchy paragraphs (1-2 sentences max).
+            - Use bullet points if listing items.
+            - Tone: ${tone}.
+            - Audience: ${audience}.
+            - End with a thought-provoking question "Call to Action".
+            - Include 3-5 relevant hashtags at the bottom.
+            
+            Output JSON: { "post": "..." }
+            
+            Text: ${text.substring(0, 10000)}`;
+        } else {
+            userPrompt = `Rewrite the text below.
+            
+            target_format: ${format}
+            target_tone: ${tone}
+            target_audience: ${audience}
+            target_length: ${length}
+            
+            Instructions:
+            - Preserve core meaning but completely adapt the style.
+            - Ensure high clarity and flow.
+            
+            Output JSON: { "rewritten_text": "..." }
+
+            Text: ${text.substring(0, 10000)}`;
+        }
+
+        try {
+            const completion = await this.openai.chat.completions.create({
+                messages: [
+                    { role: 'system', content: systemInstruction },
+                    { role: 'user', content: userPrompt }
+                ],
+                model: this.model,
+                response_format: { type: "json_object" },
+                max_tokens: 2000,
+                temperature: 0.7, // Higher creativity for rewriting
+            });
+            return JSON.parse(completion.choices[0].message.content);
+        } catch (error) {
+            logger.error('Rewrite Error:', error);
+            throw new AppError('Rewrite failed', 503);
+        }
+    }
 }
 
 module.exports = new OpenAIService();

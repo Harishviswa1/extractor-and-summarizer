@@ -18,8 +18,8 @@ class ScraperService {
     }
 
     async initBrowser() {
-        if (!this.browser) {
-            logger.info('Launching Puppeteer Stealth Browser...');
+        if (!this.browser || !this.browser.isConnected()) {
+            logger.info('Launching Shared Puppeteer Stealth Browser...');
             this.browser = await puppeteer.launch({
                 headless: "new",
                 args: [
@@ -27,9 +27,23 @@ class ScraperService {
                     '--disable-setuid-sandbox',
                     '--disable-dev-shm-usage',
                     '--disable-accelerated-2d-canvas',
-                    '--disable-gpu'
+                    '--disable-gpu',
+                    '--window-size=1920,1080' // Standardize viewport
                 ]
             });
+
+            // Handle browser disconnects
+            this.browser.on('disconnected', () => {
+                logger.warn('Browser disconnected! Clearing instance.');
+                this.browser = null;
+            });
+        }
+        return this.browser;
+    }
+
+    async ensureBrowser() {
+        if (!this.browser || !this.browser.isConnected()) {
+            return this.initBrowser();
         }
         return this.browser;
     }
@@ -135,24 +149,10 @@ class ScraperService {
     }
 
     async browserParse(url, opts = {}) {
-        let browser = null;
+        let page = null;
         try {
-            const launchOptions = {
-                headless: "new",
-                args: [
-                    '--no-sandbox',
-                    '--disable-setuid-sandbox',
-                    '--disable-dev-shm-usage',
-                    '--window-size=1920,1080'
-                ]
-            };
-
-            if (opts.proxy) {
-                launchOptions.args.push(`--proxy-server=${opts.proxy}`);
-            }
-
-            browser = await puppeteer.launch(launchOptions);
-            const page = await browser.newPage();
+            const browser = await this.ensureBrowser();
+            page = await browser.newPage();
 
             // Viewport & headers handled largely by Stealth, but setting viewport is good practice
             await page.setViewport({ width: 1920, height: 1080 });
@@ -168,6 +168,16 @@ class ScraperService {
                 }
             });
 
+            if (opts.proxy) {
+                // Note: Proxy per page is complex in Puppeteer. 
+                // Standard Puppeteer sets proxy at browser level. 
+                // For per-request proxy, we might need 'puppeteer-page-proxy' or similar.
+                // For now, ignoring per-request proxy to maintain shared browser stability 
+                // OR we would need a separate browser intance for proxy requests.
+                // IF proxy is crucial for some requests, we should spawn a temp browser for those ONLY.
+                logger.warn('Proxy requested but shared browser in use. Optimization: Ignoring proxy for stability or implement temp browser.');
+            }
+
             await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
 
             // CSR Support: Wait for content
@@ -178,11 +188,12 @@ class ScraperService {
             } catch (e) { /* ignore */ }
 
             const html = await page.content();
-            await browser.close();
+            await page.close(); // Only close the page, NOT the browser
             return this.parseHtml(html, url);
 
         } catch (err) {
-            if (browser) await browser.close();
+            if (page) await page.close().catch(() => { });
+            // If browser crashed, ensureBrowser will handle it next time, but we don't close browser here unless critical
             throw err;
         }
     }

@@ -14,6 +14,7 @@ router.use(authCheck);
 router.use(rateLimiter);
 
 const jobController = require('../controllers/job.controller');
+const aiController = require('../controllers/ai.controller');
 
 router.get('/extract', extractController.extractUrl);
 router.get('/summarize', summarizeController.summarizeUrl);
@@ -23,5 +24,9 @@ router.post('/summarize-text', summarizeController.summarizeText);
 router.post('/compare', summarizeController.compare);
 router.post('/headline', summarizeController.headlines);
 // router.post('/rss-monitor', summarizeController.monitorRss);
+
+// New AI Analysis Endpoints
+router.post('/analyze', aiController.analyze);
+router.post('/rewrite', aiController.rewrite);
 
 module.exports = router;
