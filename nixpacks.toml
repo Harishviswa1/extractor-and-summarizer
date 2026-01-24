@@ -1,0 +1,11 @@
+# Nixpacks configuration for Railway
+
+# Install Chromium from the system packages instead of npm downloading it
+[phases.setup]
+nixPkgs = ["...", "chromium"]
+
+[phases.build]
+cmds = ["npm ci --only=production"]
+
+[start]
+cmd = "node src/app.js"

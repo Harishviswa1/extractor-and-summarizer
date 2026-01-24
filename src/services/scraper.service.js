@@ -20,7 +20,11 @@ class ScraperService {
     async initBrowser() {
         if (!this.browser || !this.browser.isConnected()) {
             logger.info('Launching Shared Puppeteer Stealth Browser...');
-            this.browser = await puppeteer.launch({
+
+            // Railway/Nixpacks typically installs chromium at /usr/bin/chromium
+            const executablePath = process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium';
+
+            const launchOptions = {
                 headless: "new",
                 args: [
                     '--no-sandbox',
@@ -30,7 +34,19 @@ class ScraperService {
                     '--disable-gpu',
                     '--window-size=1920,1080' // Standardize viewport
                 ]
-            });
+            };
+
+            // Attempt to use system chrome if available (fixes timeout issues)
+            try {
+                this.browser = await puppeteer.launch({
+                    ...launchOptions,
+                    executablePath: executablePath
+                });
+            } catch (e) {
+                logger.warn(`Failed to launch with ${executablePath}, trying default bundled...`);
+                // Fallback to bundled if local development or path invalid
+                this.browser = await puppeteer.launch(launchOptions);
+            }
 
             // Handle browser disconnects
             this.browser.on('disconnected', () => {

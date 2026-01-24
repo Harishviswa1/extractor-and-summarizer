@@ -57,6 +57,16 @@ exports.summarizeUrl = async (req, res, next) => {
                 .filter(p => p.trim())
                 .map(p => `<p>${p.replace(/\n/g, '<br>')}</p>`)
                 .join('');
+        } else {
+            // Clean up excess newlines for JSON output if not HTML
+            // e.g. "Line 1\n\nLine 2" -> "Line 1 Line 2"
+            // Using space or keeping single newline depends on user preference. 
+            // "Including \ns in the summary" usually implies they want a single block.
+            // We will normalize to single spaces if concise, or preserve paragraphs if it looks like a list?
+            // Safest for "data" is probably removing newlines if style is 'concise'.
+            if (!style || style === 'concise' || style === 'headline') {
+                summary = summary.replace(/\s+/g, ' ').trim();
+            }
         }
 
         const responseData = {
