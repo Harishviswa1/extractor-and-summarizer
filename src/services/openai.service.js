@@ -146,6 +146,7 @@ class OpenAIService {
         Constraints: 
         - Ignore navigation menus, footers, "Read More" links, and promotional text.
         - Do NOT include phrases like "Translation to English" or "Summary:". Just return the content.
+        - Do NOT use Markdown formatting or HTML tags. Return plain text.
         
         Content:
         ${safeText} 
@@ -218,7 +219,8 @@ class OpenAIService {
         1. Adaptation: Completely adapt the structure and vocabulary to fit the '${format}' format.
         2. Language: Output STRICTLY in ${lang}.
         3. Formatting: Use appropriate formatting (bullet points, emojis for social, paragraphs for blogs).
-        4. Viral Elements: If format implies social media, include a hook and 3-5 relevant hashtags.
+        4. Constraints: Do NOT use Markdown formatting (like **bold**, # Header) unless specifically requested by format "markdown". Do NOT use HTML tags. Return plain text content inside JSON.
+        5. Viral Elements: If format implies social media, include a hook and 3-5 relevant hashtags.
         
         Output:
         Return valid JSON with a single key "rewritten_text" containing the result.

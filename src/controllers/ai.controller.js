@@ -56,6 +56,24 @@ exports.rewrite = async (req, res, next) => {
             lang: lang || 'en' // Default language
         });
 
+        // Optimization: Clean up excess newlines if they are just artifacts
+        if (result.rewritten_text && typeof result.rewritten_text === 'string') {
+            // If format clearly implies blocks (like linkedin/blog), we might WANT newlines. 
+            // But user explicitly complained about \n artifacts. 
+            // We'll normalize multiple newlines to single, or space if concise.
+            if (format === 'concise' || format === 'one-sentence' || !format) {
+                result.rewritten_text = result.rewritten_text.replace(/\s+/g, ' ').trim();
+            } else {
+                // For others, just ensure we don't have excessive gaps (e.g. \n\n\n)
+                result.rewritten_text = result.rewritten_text.replace(/\n{3,}/g, '\n\n').trim();
+            }
+        }
+
+        // 2. Set Cache
+        if (cacheKey) {
+            await redis.set(cacheKey, JSON.stringify(result), 'EX', 86400);
+        }
+
         res.status(200).json({
             status: 'success',
             data: result

@@ -104,9 +104,15 @@ exports.summarizeText = async (req, res, next) => {
             openaiService.generateHeadlines(text)
         ]);
 
+        // Clean up newlines for cleaner JSON
+        let cleanSummary = summary;
+        if (!style || style === 'concise' || style === 'headline') {
+            cleanSummary = summary.replace(/\s+/g, ' ').trim();
+        }
+
         res.status(200).json({
             status: 'success',
-            data: { summary, headlines }
+            data: { summary: cleanSummary, headlines }
         });
     } catch (err) {
         next(err);
