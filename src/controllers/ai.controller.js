@@ -2,6 +2,7 @@ const openaiService = require('../services/openai.service');
 const scraperService = require('../services/scraper.service');
 const AppError = require('../utils/appError');
 const { v4: uuidv4 } = require('uuid');
+const redis = require('../config/redis'); // Added for caching
 
 // Helper to get text from URL or Body (Optimized)
 const getContent = async (req) => {
