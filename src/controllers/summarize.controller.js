@@ -71,7 +71,6 @@ exports.summarizeUrl = async (req, res, next) => {
             // "Including \ns in the summary" usually implies they want a single block.
             // We will normalize to single spaces if concise, or preserve paragraphs if it looks like a list?
             // Safest for "data" is probably removing newlines if style is 'concise'.
-        } else {
             // Aggressive Cleanup for Plain Text / JSON
             // 1. Remove HTML tags (if any slipped through)
             // 2. Remove escaped newlines (\n) and literal newlines
