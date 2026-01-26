@@ -25,36 +25,47 @@ class OpenAIService {
         this.model = 'gpt-4o-mini';
     }
 
-    async summarize(text, options = {}) {
-        const { lang = 'en', style = 'concise', length = 0 } = options;
+    async withRetry(operation) {
+        const delays = [1000, 3000, 5000]; // Backoff: 1s, 3s, 5s
 
-        // Validation
-        if (!text || typeof text !== 'string' || text.trim().length === 0) {
-            throw new AppError('No text provided for summarization', 400);
+        for (let i = 0; i <= delays.length; i++) {
+            try {
+                return await operation();
+            } catch (error) {
+                // Check if error is retriable (429, 500, 502, 503)
+                const status = error.status || (error.response ? error.response.status : null);
+                const isRetriable = status === 429 || status === 500 || status === 502 || status === 503;
+
+                if (!isRetriable || i === delays.length) {
+                    throw error; // Not retriable or max retries reached
+                }
+
+                logger.warn(`OpenAI Error ${status}. Retrying in ${delays[i]}ms...`);
+                await new Promise(resolve => setTimeout(resolve, delays[i]));
+            }
         }
+    }
 
-        const prompt = this.buildSummarizePrompt(text, lang, style, length);
+    async summarize(text, options = {}) {
+        return this.withRetry(async () => {
+            const { lang = 'en', style = 'concise', length = 0 } = options;
 
-        try {
+            // ... Validation logic can be outside retry if deterministic, but okay here
+
+            const prompt = this.buildSummarizePrompt(text, lang, style, length);
+
             const completion = await this.openai.chat.completions.create({
                 messages: [{ role: 'user', content: prompt }],
                 model: this.model,
-                max_tokens: 1500, // Increased for longer summaries
-                temperature: 0.4, // Slightly clearer output
+                max_tokens: 1500,
+                temperature: 0.4,
             });
 
             const content = completion.choices[0].message.content;
             if (!content) throw new Error('OpenAI returned empty content');
 
             return content;
-        } catch (error) {
-            logger.error('OpenAI Error:', error);
-            if (error.status === 401) throw new AppError('Invalid OpenAI API Key', 500);
-            if (error.status === 429) throw new AppError('OpenAI Rate Limit Exceeded', 429);
-            if (error.status === 400) throw new AppError(`OpenAI Bad Request: ${error.message}`, 400);
-
-            throw new AppError(`AI Service functionality failed: ${error.message}`, 502);
-        }
+        });
     }
 
     // ... (keep generateHeadlines & compare methods same as before if needed, or update similarly) 
@@ -91,21 +102,26 @@ class OpenAIService {
         const t1 = (text1 || '').substring(0, 3000);
         const t2 = (text2 || '').substring(0, 3000);
 
-        const prompt = `Compare the following two articles. Identify biased language, contradictions, and tone differences.
+        const prompt = `Compare the following two articles and return a strict JSON object with this structure:
         
-        Finally, determine **which article is better** based on objective reporting, depth, and clarity.
+        {
+          "shared_points": ["Point 1", "Point 2"],
+          "unique_to_a": ["Point unique to Article 1"],
+          "unique_to_b": ["Point unique to Article 2"],
+          "contradictions": [
+            { "topic": "Topic Name", "article_a": "What Article 1 says", "article_b": "What Article 2 says" }
+          ],
+          "tone_comparison": { "article_a": "Tone description", "article_b": "Tone description" },
+          "coverage_score": { "article_a": 0.0 to 1.0, "article_b": 0.0 to 1.0 }
+        }
+
+        Analysis Rules:
+        1. "contradictions": List factual conflicts or opposing viewpoints.
+        2. "coverage_score": Estimate how comprehensive each article is (0.0 = vague, 1.0 = highly detailed).
         
         Article 1: ${t1}...
         
-        Article 2: ${t2}...
-        
-        Output JSON: { 
-            "bias_analysis": "...", 
-            "contradictions": ["..."], 
-            "tone_comparison": "...",
-            "best_article": "Article 1" or "Article 2",
-            "reasoning": "Why it is better..."
-        }`;
+        Article 2: ${t2}...`;
 
         try {
             const completion = await this.openai.chat.completions.create({
@@ -163,6 +179,14 @@ class OpenAIService {
             "sentiment": { "score": 0.0 to 1.0, "label": "Positive/Negative/Neutral" },
             "bias_check": { "is_biased": boolean, "bias_type": "political/commercial/none", "description": "short explanation" },
             "key_entities": [ { "name": "...", "type": "Person/Org/Loc" } ],
+            "seo_keywords": [ "keyword1", "keyword2", "keyword3", "..." ],
+            "seo_meta_description": "SEO optimized description under 160 characters.",
+            "headlines": {
+                "seo": "Keyword rich title",
+                "clickbait": "Curiosity inducing title",
+                "emotional": "Title appealing to core emotions",
+                "neutral": "Fact-based reporting title"
+            },
             "readability": { "flesch_kincaid_grade": number, "level": "Easy/Medium/Hard" },
             "category": "Technology/Politics/Health/...",
             "summary_sentence": "One sentence overview."

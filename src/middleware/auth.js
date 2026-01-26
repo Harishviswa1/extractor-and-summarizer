@@ -10,10 +10,10 @@ const authCheck = (req, res, next) => {
 
     if (backendSecret && rapidApiSecret === backendSecret) {
         // Request came mainly from RapidAPI
-        // RapidAPI doesn't forward the original user's plan by default unless we use proper headers.
-        // For simplicity, we assume generic "PRO" access for RapidAPI requests to allow high throughput
-        // OR we can trust RapidAPI's own rate limiting.
-        req.user = { role: 'MEGA', apiKey: 'rapidapi-gateway' };
+        const planHeader = req.headers['x-plan-level'];
+        const plan = (planHeader && planHeader.toUpperCase() === 'PRO') ? 'PRO' : 'BASIC';
+
+        req.user = { role: 'MEGA', apiKey: 'rapidapi-gateway', plan };
         return next();
     }
 
@@ -27,8 +27,12 @@ const authCheck = (req, res, next) => {
     // STRICT CHECK: Only allow Admin Key for direct access
     // This prevents random strings like '1234' from working freely.
     if (apiKey === process.env.ADMIN_API_KEY) {
-        req.user = { apiKey, role: 'ADMIN' };
-        logger.info('Authenticated request with role: ADMIN');
+        // ALLOW TESTING: Default to PRO, but allow Admin to simulate BASIC via header
+        const planHeader = req.headers['x-plan-level'];
+        const plan = (planHeader && planHeader.toUpperCase() === 'BASIC') ? 'BASIC' : 'PRO';
+
+        req.user = { apiKey, role: 'ADMIN', plan };
+        logger.info(`Authenticated request with role: ADMIN (Plan: ${plan})`);
         return next();
     }
 

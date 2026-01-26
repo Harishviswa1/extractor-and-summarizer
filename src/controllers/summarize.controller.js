@@ -30,7 +30,9 @@ exports.summarizeUrl = async (req, res, next) => {
 
         // 2. Extract Content (Delegated to Optimized ScraperService)
         // This handles "Fast fetch", "Puppeteer Stealth", "Google Cache", etc. internally.
-        const extracted = await scraperService.extract(url);
+        // 2. Extract Content (Delegated to Optimized ScraperService)
+        // Pass plan to scraper (might block if puppeteer needed and Basic plan)
+        const extracted = await scraperService.extract(url, null, req.user?.plan);
 
         // 3. Null Handling & Payload Optimization
         // Only use the most lightweight yet complete content available.
@@ -39,6 +41,11 @@ exports.summarizeUrl = async (req, res, next) => {
 
         if (!contentToSummarize || contentToSummarize.trim().length < 50) {
             throw new AppError("Extracted content is null or too short to summarize.", 422);
+        }
+
+        // Tier Check: Length Limit
+        if (req.user?.plan === 'BASIC' && contentToSummarize.length > 5000) {
+            throw new AppError(`Basic Plan Limit: Article too long (${contentToSummarize.length} chars). Basic plan limit is 5000 characters. Please upgrade to Pro.`, 403);
         }
 
         logger.info(`Summarizing ${contentToSummarize.length} chars...`);

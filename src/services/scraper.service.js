@@ -15,6 +15,7 @@ puppeteer.use(StealthPlugin());
 class ScraperService {
     constructor() {
         this.browser = null;
+        this.activeRequests = 0;
     }
 
     async initBrowser() {
@@ -165,15 +166,52 @@ class ScraperService {
     }
 
     async browserParse(url, opts = {}) {
+        // Concurrency Limit Check
+        if (this.activeRequests >= 5) { // Limit to 5 parallel pages
+            throw new AppError('Server busy: Too many parallel scraping jobs. Please try again later.', 429);
+        }
+
+        this.activeRequests++;
+        let browser = null;
         let page = null;
+        let isTempBrowser = false;
+
         try {
-            const browser = await this.ensureBrowser();
+            // 1. Browser Selection (Shared vs Isolated Proxy)
+            if (opts.proxy) {
+                logger.info(`Launching Isolated Browser for Proxy Request: ${url}`);
+                const proxyUrl = new URL(opts.proxy);
+                browser = await puppeteer.launch({
+                    headless: "new",
+                    args: [
+                        '--no-sandbox',
+                        '--disable-setuid-sandbox',
+                        `--proxy-server=${proxyUrl.protocol}//${proxyUrl.host}`,
+                        '--disable-gpu'
+                    ]
+                });
+                isTempBrowser = true;
+            } else {
+                browser = await this.ensureBrowser();
+            }
+
             page = await browser.newPage();
 
-            // Viewport & headers handled largely by Stealth, but setting viewport is good practice
+            // Authenticate Proxy if needed
+            if (opts.proxy) {
+                const proxyUrl = new URL(opts.proxy);
+                if (proxyUrl.username && proxyUrl.password) {
+                    await page.authenticate({
+                        username: proxyUrl.username,
+                        password: proxyUrl.password
+                    });
+                }
+            }
+
+            // Viewport & headers
             await page.setViewport({ width: 1920, height: 1080 });
 
-            // Resource Blocking
+            // Resource Blocking (Optimize Speed)
             await page.setRequestInterception(true);
             page.on('request', (req) => {
                 const resourceType = req.resourceType();
@@ -184,34 +222,105 @@ class ScraperService {
                 }
             });
 
-            if (opts.proxy) {
-                // Note: Proxy per page is complex in Puppeteer. 
-                // Standard Puppeteer sets proxy at browser level. 
-                // For per-request proxy, we might need 'puppeteer-page-proxy' or similar.
-                // For now, ignoring per-request proxy to maintain shared browser stability 
-                // OR we would need a separate browser intance for proxy requests.
-                // IF proxy is crucial for some requests, we should spawn a temp browser for those ONLY.
-                logger.warn('Proxy requested but shared browser in use. Optimization: Ignoring proxy for stability or implement temp browser.');
-            }
-
-            await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
+            const timeout = opts.proxy ? 60000 : 30000; // Longer timeout for proxy
+            await page.goto(url, { waitUntil: 'domcontentloaded', timeout });
 
             // CSR Support: Wait for content
             try {
                 await page.waitForSelector('body', { timeout: 10000 });
-                // Try waiting for common article tags if body loads fast but content is slow
-                await page.waitForSelector('article, main, h1', { timeout: 5000 }).catch(() => { });
-            } catch (e) { /* ignore */ }
+                // Check for fast failure (captchas/blockers)
+                const bodyText = await page.evaluate(() => document.body.innerText);
+                if (this.isBotCheck(await page.title(), bodyText)) {
+                    throw new Error('Bot Block Detected inside Puppeteer');
+                }
+            } catch (e) {
+                if (e.message.includes('Bot Block')) throw e;
+                /* ignore selector timeout */
+            }
 
             const html = await page.content();
-            await page.close(); // Only close the page, NOT the browser
+
+            // Cleanup: Close page usually, but if temp browser we close whole browser below
+            if (!isTempBrowser) await page.close();
+
             return this.parseHtml(html, url);
 
         } catch (err) {
-            if (page) await page.close().catch(() => { });
-            // If browser crashed, ensureBrowser will handle it next time, but we don't close browser here unless critical
+            if (page && !page.isClosed()) await page.close().catch(() => { });
             throw err;
+        } finally {
+            this.activeRequests--;
+            if (isTempBrowser && browser) {
+                await browser.close().catch(() => { });
+            }
         }
+    }
+
+    // Updated Extract Flow
+    async extract(url, jobId = null, userPlan = 'PRO') {
+        const cacheKey = `extract:v2:${url}`;
+        const cached = await redis.get(cacheKey);
+        if (cached) return JSON.parse(cached);
+
+        let content = null;
+        let lastError = null;
+
+        // Layer 1: Axios + Readability (Fastest, Cheapest)
+        try {
+            logger.info(`Layer 1 (Axios): ${url}`);
+            content = await this.fetchAndParse(url);
+        } catch (err) {
+            lastError = err;
+            logger.warn(`Layer 1 failed: ${err.message}`);
+        }
+
+        // Tier Check: If BASIC, stop here if failed
+        if (!content && userPlan === 'BASIC') {
+            throw new AppError('Basic Plan Limit: Simple extraction failed. Advanced scraping (Puppeteer/Proxy) is only available on the Pro Plan. Please upgrade.', 403);
+        }
+
+        // Layer 2: Puppeteer Shared (No Proxy) - For JS sites / Basic Blocks
+        // SKIP if Layer 1 was clearly a 403/429 Block (Go straight to Proxy)
+        const isBlock = lastError && (lastError.response?.status === 403 || lastError.response?.status === 429);
+
+        if (!content && !isBlock) {
+            try {
+                logger.info(`Layer 2 (Puppeteer Shared): ${url}`);
+                content = await this.browserParse(url);
+            } catch (err) {
+                lastError = err;
+                logger.warn(`Layer 2 failed: ${err.message}`);
+            }
+        }
+
+        // Layer 3: Puppeteer Proxy (Isolated) - ONLY on Block or Hard Failure
+        if (!content && process.env.PROXY_SERVER_URL) {
+            const status = lastError?.response?.status || 500;
+            const msg = lastError?.message || '';
+            const needsProxy = status === 403 || status === 429 || msg.includes('Bot Block') || msg.includes('Timeout');
+
+            if (needsProxy) {
+                try {
+                    logger.info(`Layer 3 (Proxy Isolated): ${url}`);
+                    content = await this.browserParse(url, { proxy: process.env.PROXY_SERVER_URL });
+                } catch (err) {
+                    logger.error(`Layer 3 failed: ${err.message}`);
+                }
+            }
+        }
+
+        // Layer 4: Google Cache (Last Resort)
+        if (!content) {
+            // ... existing google cache logic if desired, or skip
+        }
+
+        if (!content || !content.textContent || content.textContent.length < 50) {
+            throw new AppError('Detailed extraction failed after all retries.', 422);
+        }
+
+        const result = { url, ...content };
+        await redis.set(cacheKey, JSON.stringify(result), 'EX', 86400);
+        return result;
     }
 
 

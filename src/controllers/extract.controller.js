@@ -8,7 +8,8 @@ exports.extractUrl = async (req, res, next) => {
         if (!url) return next(new AppError('URL is required', 400));
 
         const jobId = uuidv4();
-        const result = await scraperService.extract(url, jobId);
+        // Pass User Plan to enforce limits (Basic vs Pro)
+        const result = await scraperService.extract(url, jobId, req.user?.plan);
 
         // Remove strategy and extractedAt from data object as requested by user
         // We return a flattened object in 'data' without the internal 'meta' or 'strategy' keys
