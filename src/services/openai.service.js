@@ -147,12 +147,15 @@ class OpenAIService {
         if (length > 0) {
             instruction = `Provide a summary exactly ${length} paragraphs long.`;
         } else {
+            // Dynamic Style Handling with Presets
             switch (style) {
+                // Keep specific optimized prompts for known presets
                 case 'bullet': instruction = 'Provide a bullet point summary.'; break;
                 case 'eli5': instruction = 'Explain like I am 5 years old.'; break;
                 case 'business': instruction = 'Focus on business impact, key metrics, and actionable insights.'; break;
                 case 'headline': instruction = 'Provide a single sentence summary.'; break;
-                default: instruction = 'Provide a concise summary.';
+                // For everything else (or empty), use dynamic input or default to concise
+                default: instruction = `Provide a ${style || 'concise'} summary.`;
             }
         }
 
