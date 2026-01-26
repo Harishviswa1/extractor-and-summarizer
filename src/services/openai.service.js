@@ -112,7 +112,11 @@ class OpenAIService {
             { "topic": "Topic Name", "article_a": "What Article 1 says", "article_b": "What Article 2 says" }
           ],
           "tone_comparison": { "article_a": "Tone description", "article_b": "Tone description" },
-          "coverage_score": { "article_a": 0.0 to 1.0, "article_b": 0.0 to 1.0 }
+          "coverage_score": { "article_a": 0.0 to 1.0, "article_b": 0.0 to 1.0 },
+          "recommendation": {
+              "for_quick_update": "article_a" or "article_b",
+              "for_in_depth_context": "article_a" or "article_b"
+          }
         }
 
         Analysis Rules:
