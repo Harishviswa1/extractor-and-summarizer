@@ -71,8 +71,25 @@ exports.summarizeUrl = async (req, res, next) => {
             // "Including \ns in the summary" usually implies they want a single block.
             // We will normalize to single spaces if concise, or preserve paragraphs if it looks like a list?
             // Safest for "data" is probably removing newlines if style is 'concise'.
+        } else {
+            // Aggressive Cleanup for Plain Text / JSON
+            // 1. Remove HTML tags (if any slipped through)
+            // 2. Remove escaped newlines (\n) and literal newlines
+            // 3. Collapse multiple spaces
             if (!style || style === 'concise' || style === 'headline') {
-                summary = summary.replace(/\s+/g, ' ').trim();
+                summary = summary
+                    .replace(/<[^>]*>?/gm, '') // Remove HTML tags
+                    .replace(/\\n/g, ' ')      // Remove escaped newlines
+                    .replace(/\n/g, ' ')       // Remove literal newlines
+                    .replace(/\s+/g, ' ')      // Collapse spaces
+                    .trim();
+            } else {
+                // For other styles (e.g. bullet), we might want to keep some structure, 
+                // but user specifically asked to remove artifacts. 
+                // If the style implies a list, we should probably keep \n but clean them.
+                // However, the complaint was about "slashes and \n".
+                // Let's clean the slashes at least.
+                summary = summary.replace(/\\n/g, '\n');
             }
         }
 
@@ -112,9 +129,15 @@ exports.summarizeText = async (req, res, next) => {
         ]);
 
         // Clean up newlines for cleaner JSON
+        // Clean up newlines for cleaner JSON
         let cleanSummary = summary;
         if (!style || style === 'concise' || style === 'headline') {
-            cleanSummary = summary.replace(/\s+/g, ' ').trim();
+            cleanSummary = summary
+                .replace(/<[^>]*>?/gm, '') // Remove HTML tags
+                .replace(/\\n/g, ' ')      // Remove escaped newlines
+                .replace(/\n/g, ' ')       // Remove literal newlines
+                .replace(/\s+/g, ' ')      // Collapse spaces
+                .trim();
         }
 
         res.status(200).json({
