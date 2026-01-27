@@ -1,7 +1,6 @@
 const axios = require('axios');
 const cheerio = require('cheerio');
-const puppeteer = require('puppeteer-extra');
-const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+const { chromium } = require('playwright');
 const { JSDOM } = require('jsdom');
 const { Readability } = require('@mozilla/readability');
 const TurndownService = require('turndown');
@@ -9,8 +8,6 @@ const redis = require('../config/redis');
 const logger = require('../config/logger');
 const AppError = require('../utils/appError');
 const { v4: uuidv4 } = require('uuid');
-
-puppeteer.use(StealthPlugin());
 
 class ScraperService {
     constructor() {
@@ -20,36 +17,26 @@ class ScraperService {
 
     async initBrowser() {
         if (!this.browser || !this.browser.isConnected()) {
-            logger.info('Launching Shared Puppeteer Stealth Browser...');
-
-            // Railway/Nixpacks typically installs chromium at /usr/bin/chromium
-            const executablePath = process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium';
+            logger.info('Launching Shared Playwright Browser...');
 
             const launchOptions = {
-                headless: "new",
+                headless: true,
                 args: [
                     '--no-sandbox',
                     '--disable-setuid-sandbox',
                     '--disable-dev-shm-usage',
-                    '--disable-accelerated-2d-canvas',
                     '--disable-gpu',
-                    '--window-size=1920,1080' // Standardize viewport
+                    '--disable-blink-features=AutomationControlled' // basic stealth
                 ]
             };
 
-            // Attempt to use system chrome if available (fixes timeout issues)
             try {
-                this.browser = await puppeteer.launch({
-                    ...launchOptions,
-                    executablePath: executablePath
-                });
+                this.browser = await chromium.launch(launchOptions);
             } catch (e) {
-                logger.warn(`Failed to launch with ${executablePath}, trying default bundled...`);
-                // Fallback to bundled if local development or path invalid
-                this.browser = await puppeteer.launch(launchOptions);
+                logger.error(`Failed to launch Playwright browser: ${e.message}`);
+                throw e;
             }
 
-            // Handle browser disconnects
             this.browser.on('disconnected', () => {
                 logger.warn('Browser disconnected! Clearing instance.');
                 this.browser = null;
@@ -72,11 +59,10 @@ class ScraperService {
         }
     }
 
-    async extract(url, jobId = null) {
-        // Cache Busting: Changed to v2 to invalidate old nested structures
+    // Updated Extract Flow
+    async extract(url, jobId = null, userPlan = 'PRO') {
         const cacheKey = `extract:v2:${url}`;
         const cached = await redis.get(cacheKey);
-
         if (cached) {
             logger.info(`Cache hit for ${url}`);
             if (jobId) await this.updateJob(jobId, 'completed', JSON.parse(cached));
@@ -86,62 +72,79 @@ class ScraperService {
         if (jobId) await this.updateJob(jobId, 'fetching');
 
         let content = null;
+        let lastError = null;
         let strategy = 'fetch-readability';
 
+        // Layer 1: Axios + Readability (Fastest, Cheapest)
         try {
-            logger.info(`Attempting Layer 1 (Fetch) for ${url}`);
+            logger.info(`Layer 1 (Axios): ${url}`);
             content = await this.fetchAndParse(url);
         } catch (err) {
-            logger.warn(`Layer 1 failed for ${url}: ${err.message}. Switching to Layer 2.`);
-            strategy = 'puppeteer-readability';
+            lastError = err;
+            logger.warn(`Layer 1 failed: ${err.message}`);
         }
 
-        if (!content || !content.textContent || content.textContent.length < 200 || this.isBotCheck(content.title, content.textContent)) {
-            logger.info(`Content insufficient or Bot Block detected. Switching to Layer 2 (Puppeteer Stealth) for ${url}`);
+        // Tier Check: If BASIC, stop here if failed
+        if (!content && userPlan === 'BASIC') {
+            throw new AppError('Basic Plan Limit: Simple extraction failed. Advanced scraping (Puppeteer/Playwright) is only available on the Pro Plan. Please upgrade.', 403);
+        }
 
+        // Layer 2: Playwright Shared (No Proxy) - For JS sites / Basic Blocks
+        // SKIP if Layer 1 was clearly a 403/429 Block (Go straight to Proxy)
+        const isBlock = lastError && (lastError.response?.status === 403 || lastError.response?.status === 429);
+
+        if (!content && !isBlock) {
             try {
+                logger.info(`Layer 2 (Playwright Shared): ${url}`);
                 content = await this.browserParse(url);
-                strategy = 'puppeteer-readability';
+                strategy = 'playwright-readability';
             } catch (err) {
-                logger.error(`Layer 2 failed for ${url}: ${err.message}`);
-                // Proceed to next fallback
+                lastError = err;
+                logger.warn(`Layer 2 failed: ${err.message}`);
             }
         }
 
-        // Layer 3: Google Cache Fallback (New)
-        if (!content || !content.textContent || content.textContent.length < 200 || this.isBotCheck(content.title, content.textContent)) {
-            logger.info(`Layer 2 failed/blocked. Attempting Layer 3 (Google Cache) for ${url}`);
+        // Layer 3: Playwright Proxy (Isolated Context) - ONLY on Block or Hard Failure
+        if (!content && process.env.PROXY_SERVER_URL) {
+            const status = lastError?.response?.status || 500;
+            const msg = lastError?.message || '';
+            const needsProxy = status === 403 || status === 429 || msg.includes('Bot Block') || msg.includes('Timeout') || isBlock;
+
+            if (needsProxy) {
+                try {
+                    logger.info(`Layer 3 (Playwright Proxy): ${url}`);
+                    content = await this.browserParse(url, { proxy: process.env.PROXY_SERVER_URL });
+                    strategy = 'playwright-proxy';
+                } catch (err) {
+                    logger.error(`Layer 3 failed: ${err.message}`);
+                }
+            }
+        }
+
+        // Layer 4: Google Cache (Last Resort)
+        if (!content) {
+            logger.info(`Layer 3 failed/blocked. Attempting Layer 4 (Google Cache) for ${url}`);
             try {
                 const cacheUrl = `http://webcache.googleusercontent.com/search?q=cache:${encodeURIComponent(url)}`;
                 content = await this.browserParse(cacheUrl);
-                // Clean up Google Header artifacts if successful
+                // Clean up Google Header artifacts
                 if (content && content.textContent) {
                     content.title = content.title.replace(' - Google Search', '').replace('cache:', '');
                     strategy = 'google-cache';
                 }
             } catch (err) {
-                logger.warn(`Layer 3 (Google Cache) failed: ${err.message}`);
+                logger.warn(`Layer 4 (Google Cache) failed: ${err.message}`);
             }
         }
 
-        // Layer 4: Proxy Fallback (Existing)
-        if (!content || !content.textContent || content.textContent.length < 200 || this.isBotCheck(content.title, content.textContent)) {
-            if (process.env.PROXY_SERVER_URL) {
-                logger.info(`Retrying ${url} with proxy...`);
-                content = await this.browserParse(url, {
-                    proxy: process.env.PROXY_SERVER_URL
-                });
-                strategy = 'puppeteer-proxy';
-            }
-        }
-
-        if (!content || !content.textContent || content.textContent.length === 0) {
-            throw new AppError('Unable to extract meaningful content', 422);
+        if (!content || !content.textContent || content.textContent.length < 50) {
+            throw new AppError('Detailed extraction failed after all retries.', 422);
         }
 
         const result = {
             url,
-            ...content,   // title, author, content, stats etc (UNCHANGED)
+            strategy,
+            ...content,
         };
 
         await redis.set(cacheKey, JSON.stringify(result), 'EX', 86400);
@@ -167,162 +170,88 @@ class ScraperService {
 
     async browserParse(url, opts = {}) {
         // Concurrency Limit Check
-        if (this.activeRequests >= 5) { // Limit to 5 parallel pages
+        if (this.activeRequests >= 5) {
             throw new AppError('Server busy: Too many parallel scraping jobs. Please try again later.', 429);
         }
 
         this.activeRequests++;
-        let browser = null;
+        let context = null;
         let page = null;
-        let isTempBrowser = false;
 
         try {
-            // 1. Browser Selection (Shared vs Isolated Proxy)
-            if (opts.proxy) {
-                logger.info(`Launching Isolated Browser for Proxy Request: ${url}`);
-                const proxyUrl = new URL(opts.proxy);
-                browser = await puppeteer.launch({
-                    headless: "new",
-                    args: [
-                        '--no-sandbox',
-                        '--disable-setuid-sandbox',
-                        `--proxy-server=${proxyUrl.protocol}//${proxyUrl.host}`,
-                        '--disable-gpu'
-                    ]
-                });
-                isTempBrowser = true;
-            } else {
-                browser = await this.ensureBrowser();
-            }
+            const browser = await this.ensureBrowser();
 
-            page = await browser.newPage();
+            // Prepare Context Options
+            const contextOptions = {
+                viewport: { width: 1920, height: 1080 },
+                userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+                javaScriptEnabled: true,
+                ignoreHTTPSErrors: true,
+            };
 
-            // Authenticate Proxy if needed
+            // Configure Proxy if provided
             if (opts.proxy) {
-                const proxyUrl = new URL(opts.proxy);
-                if (proxyUrl.username && proxyUrl.password) {
-                    await page.authenticate({
+                try {
+                    const proxyUrl = new URL(opts.proxy);
+                    contextOptions.proxy = {
+                        server: `${proxyUrl.protocol}//${proxyUrl.host}`,
                         username: proxyUrl.username,
                         password: proxyUrl.password
-                    });
+                    };
+                } catch (e) {
+                    logger.warn(`Invalid proxy URL: ${opts.proxy} - proceeding without proxy`);
                 }
             }
 
-            // Viewport & headers
-            await page.setViewport({ width: 1920, height: 1080 });
+            // Create Context (Isolated from other requests)
+            context = await browser.newContext(contextOptions);
+            page = await context.newPage();
 
             // Resource Blocking (Optimize Speed)
-            await page.setRequestInterception(true);
-            page.on('request', (req) => {
-                const resourceType = req.resourceType();
-                if (['image', 'stylesheet', 'font', 'media'].includes(resourceType)) {
-                    req.abort();
+            await page.route('**/*', (route) => {
+                const type = route.request().resourceType();
+                // Block images, media, fontsEx
+                if (['image', 'media', 'font', 'stylesheet'].includes(type)) {
+                    route.abort();
                 } else {
-                    req.continue();
+                    route.continue();
                 }
             });
 
-            const timeout = opts.proxy ? 60000 : 30000; // Longer timeout for proxy
-            await page.goto(url, { waitUntil: 'domcontentloaded', timeout });
+            const timeout = opts.proxy ? 60000 : 30000;
 
-            // CSR Support: Wait for content
+            // Navigate
+            await page.goto(url, {
+                waitUntil: 'domcontentloaded',
+                timeout: timeout
+            });
+
+            // Wait for Body to ensure render
             try {
                 await page.waitForSelector('body', { timeout: 10000 });
-                // Check for fast failure (captchas/blockers)
+                // Bot Check
+                const title = await page.title();
                 const bodyText = await page.evaluate(() => document.body.innerText);
-                if (this.isBotCheck(await page.title(), bodyText)) {
-                    throw new Error('Bot Block Detected inside Puppeteer');
+                if (this.isBotCheck(title, bodyText)) {
+                    throw new Error('Bot Block Detected inside Playwright');
                 }
             } catch (e) {
                 if (e.message.includes('Bot Block')) throw e;
-                /* ignore selector timeout */
+                // Ignore timeout waiting for selector, might allow partial content
             }
 
             const html = await page.content();
 
-            // Cleanup: Close page usually, but if temp browser we close whole browser below
-            if (!isTempBrowser) await page.close();
-
+            await context.close(); // Clean up context and page
             return this.parseHtml(html, url);
 
         } catch (err) {
-            if (page && !page.isClosed()) await page.close().catch(() => { });
+            if (context) await context.close().catch(() => { });
             throw err;
         } finally {
             this.activeRequests--;
-            if (isTempBrowser && browser) {
-                await browser.close().catch(() => { });
-            }
         }
     }
-
-    // Updated Extract Flow
-    async extract(url, jobId = null, userPlan = 'PRO') {
-        const cacheKey = `extract:v2:${url}`;
-        const cached = await redis.get(cacheKey);
-        if (cached) return JSON.parse(cached);
-
-        let content = null;
-        let lastError = null;
-
-        // Layer 1: Axios + Readability (Fastest, Cheapest)
-        try {
-            logger.info(`Layer 1 (Axios): ${url}`);
-            content = await this.fetchAndParse(url);
-        } catch (err) {
-            lastError = err;
-            logger.warn(`Layer 1 failed: ${err.message}`);
-        }
-
-        // Tier Check: If BASIC, stop here if failed
-        if (!content && userPlan === 'BASIC') {
-            throw new AppError('Basic Plan Limit: Simple extraction failed. Advanced scraping (Puppeteer/Proxy) is only available on the Pro Plan. Please upgrade.', 403);
-        }
-
-        // Layer 2: Puppeteer Shared (No Proxy) - For JS sites / Basic Blocks
-        // SKIP if Layer 1 was clearly a 403/429 Block (Go straight to Proxy)
-        const isBlock = lastError && (lastError.response?.status === 403 || lastError.response?.status === 429);
-
-        if (!content && !isBlock) {
-            try {
-                logger.info(`Layer 2 (Puppeteer Shared): ${url}`);
-                content = await this.browserParse(url);
-            } catch (err) {
-                lastError = err;
-                logger.warn(`Layer 2 failed: ${err.message}`);
-            }
-        }
-
-        // Layer 3: Puppeteer Proxy (Isolated) - ONLY on Block or Hard Failure
-        if (!content && process.env.PROXY_SERVER_URL) {
-            const status = lastError?.response?.status || 500;
-            const msg = lastError?.message || '';
-            const needsProxy = status === 403 || status === 429 || msg.includes('Bot Block') || msg.includes('Timeout');
-
-            if (needsProxy) {
-                try {
-                    logger.info(`Layer 3 (Proxy Isolated): ${url}`);
-                    content = await this.browserParse(url, { proxy: process.env.PROXY_SERVER_URL });
-                } catch (err) {
-                    logger.error(`Layer 3 failed: ${err.message}`);
-                }
-            }
-        }
-
-        // Layer 4: Google Cache (Last Resort)
-        if (!content) {
-            // ... existing google cache logic if desired, or skip
-        }
-
-        if (!content || !content.textContent || content.textContent.length < 50) {
-            throw new AppError('Detailed extraction failed after all retries.', 422);
-        }
-
-        const result = { url, ...content };
-        await redis.set(cacheKey, JSON.stringify(result), 'EX', 86400);
-        return result;
-    }
-
 
     parseHtml(html, url) {
         // 1. Basic Setup
@@ -373,7 +302,7 @@ class ScraperService {
         logger.warn(`Readability failed for ${url}. Using Raw Fallback.`);
         // Improve Raw Text Cleaning: Decode entities & collapse spaces
         const rawBody = $('body').text();
-        const cleanedRaw = cleanText(rawBody); // simple replace is usually enough for basic entities via cheerio .text()
+        const cleanedRaw = cleanText(rawBody);
 
         if (cleanedRaw.length > 50) {
             return {
