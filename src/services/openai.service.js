@@ -194,9 +194,8 @@ class OpenAIService {
                 "emotional": "Title appealing to core emotions",
                 "neutral": "Fact-based reporting title"
             },
-            "readability": { "flesch_kincaid_grade": number, "level": "Easy/Medium/Hard" },
-            "category": "Technology/Politics/Health/...",
-            "summary_sentence": "One sentence overview."
+            "category": "Technology/Politics/Health/..."
+        }
         }
 
         Text: ${text.substring(0, 10000)}`;
@@ -249,9 +248,10 @@ class OpenAIService {
         Instructions:
         1. Adaptation: Completely adapt the structure and vocabulary to fit the '${format}' format.
         2. Language: Output STRICTLY in ${lang}.
-        3. Formatting: Use appropriate formatting (bullet points, emojis for social, paragraphs for blogs).
-        4. Constraints: Do NOT use Markdown formatting (like **bold**, # Header) unless specifically requested by format "markdown". Do NOT use HTML tags. Return plain text content inside JSON.
-        5. Viral Elements: If format implies social media, include a hook and 3-5 relevant hashtags.
+        2. Language: Output STRICTLY in ${lang}.
+        3. Formatting: Use appropriate formatting (bullet points, paragraphs).
+        4. Constraints: Do NOT use Markdown formatting (like **bold**, # Header) unless specifically requested. Do NOT use HTML tags. Return plain text.
+        5. Tone Constraint: Do NOT use emojis. Keep it professional and text-only.
         
         Output:
         Return valid JSON with a single key "rewritten_text" containing the result.
