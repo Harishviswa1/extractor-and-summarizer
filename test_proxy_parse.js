@@ -1,7 +1,7 @@
 
 const { URL } = require('url');
 
-const proxyString = "http://username:password@6.pr.thordata.net:9999";
+const proxyString = "http://td-customer-O12345:password123@6.pr.thordata.net:9999";
 
 try {
     const proxyUrl = new URL(proxyString);
