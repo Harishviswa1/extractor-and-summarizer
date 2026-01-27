@@ -25,8 +25,8 @@ router.post('/compare', summarizeController.compare);
 router.post('/headline', summarizeController.headlines);
 // router.post('/rss-monitor', summarizeController.monitorRss);
 
-// New AI Analysis Endpoints
-router.post('/analyze', aiController.analyze);
-router.post('/rewrite', aiController.rewrite);
+// New AI Analysis Endpoints (GET for Caching)
+router.get('/analyze', aiController.analyze);
+router.get('/rewrite', aiController.rewrite);
 
 module.exports = router;
