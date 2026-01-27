@@ -1,6 +1,8 @@
 const axios = require('axios');
 const cheerio = require('cheerio');
-const { chromium } = require('playwright');
+// Use playwright-extra + stealth for better evasion
+const { chromium } = require('playwright-extra');
+const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const { JSDOM } = require('jsdom');
 const { Readability } = require('@mozilla/readability');
 const TurndownService = require('turndown');
@@ -8,6 +10,9 @@ const redis = require('../config/redis');
 const logger = require('../config/logger');
 const AppError = require('../utils/appError');
 const { v4: uuidv4 } = require('uuid');
+
+// Enable Stealth Plugin
+chromium.use(StealthPlugin());
 
 class ScraperService {
     constructor() {
@@ -17,7 +22,7 @@ class ScraperService {
 
     async initBrowser() {
         if (!this.browser || !this.browser.isConnected()) {
-            logger.info('Launching Shared Playwright Browser...');
+            logger.info('Launching Shared Playwright Stealth Browser...');
 
             const launchOptions = {
                 headless: true,
@@ -26,7 +31,7 @@ class ScraperService {
                     '--disable-setuid-sandbox',
                     '--disable-dev-shm-usage',
                     '--disable-gpu',
-                    '--disable-blink-features=AutomationControlled' // basic stealth
+                    // '--disable-blink-features=AutomationControlled' // StealthPlugin handles this better
                 ]
             };
 
@@ -61,7 +66,7 @@ class ScraperService {
 
     // Updated Extract Flow
     async extract(url, jobId = null, userPlan = 'PRO') {
-        const cacheKey = `extract:v2:${url}`;
+        const cacheKey = `extract:v3:${url}`;
         const cached = await redis.get(cacheKey);
         if (cached) {
             logger.info(`Cache hit for ${url}`);
@@ -95,7 +100,7 @@ class ScraperService {
 
         if (!content && !isBlock) {
             try {
-                logger.info(`Layer 2 (Playwright Shared): ${url}`);
+                logger.info(`Layer 2 (Playwright Stealth Shared): ${url}`);
                 content = await this.browserParse(url);
                 strategy = 'playwright-readability';
             } catch (err) {
@@ -112,7 +117,7 @@ class ScraperService {
 
             if (needsProxy) {
                 try {
-                    logger.info(`Layer 3 (Playwright Proxy): ${url}`);
+                    logger.info(`Layer 3 (Playwright Stealth Proxy): ${url}`);
                     content = await this.browserParse(url, { proxy: process.env.PROXY_SERVER_URL });
                     strategy = 'playwright-proxy';
                 } catch (err) {
@@ -376,7 +381,8 @@ class ScraperService {
             t.includes('unusual traffic') ||
             b.includes('pardon our interruption') ||
             b.includes('detected unusual activity') ||
-            b.includes('our systems have detected unusual traffic');
+            b.includes('our systems have detected unusual traffic') ||
+            b.includes('this page checks to see if it\'s really you');
     }
 }
 
