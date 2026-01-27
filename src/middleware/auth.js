@@ -17,31 +17,10 @@ const authCheck = (req, res, next) => {
         return next();
     }
 
-    // 2) Direct API Key (Admin / Internal Service)
-    const apiKey = req.headers['x-api-key'];
-
-    if (!apiKey) {
-        return next(new AppError('Unauthorized: No API Key or RapidAPI Secret provided', 401));
-    }
-
-    // STRICT CHECK: Only allow Admin Key for direct access
-    // This prevents random strings like '1234' from working freely.
-    if (apiKey === process.env.ADMIN_API_KEY) {
-        // ALLOW TESTING: Default to PRO, but allow Admin to simulate BASIC via header
-        const planHeader = req.headers['x-plan-level'];
-        const plan = (planHeader && planHeader.toUpperCase() === 'BASIC') ? 'BASIC' : 'PRO';
-
-        req.user = { apiKey, role: 'ADMIN', plan };
-        logger.info(`Authenticated request with role: ADMIN (Plan: ${plan})`);
-        return next();
-    }
-
-    // If you want to support manual Keys for friends/clients outside RapidAPI, add them here:
-    // if (apiKey === 'some-client-key') { ... }
-
-    // If we get here, the key is invalid
-    logger.warn(`Invalid API Key attempt: ${apiKey}`);
-    return next(new AppError('Unauthorized: Invalid API Key', 401));
+    // 2) Reject everything else
+    // Since we removed Admin Key support, any request without the correct RapidAPI Secret is unauthorized.
+    logger.warn(`Unauthorized access attempt without valid RapidAPI proxy secret.`);
+    return next(new AppError('Unauthorized: Access allowed only via RapidAPI Gateway', 401));
 };
 
 module.exports = authCheck;
