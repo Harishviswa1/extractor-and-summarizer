@@ -289,15 +289,35 @@ class ScraperService {
 
             if (url.includes('espncricinfo.com')) {
                 try {
-                    // Start with known match report selector
-                    const report = page.locator('div.ds-text-typo-mid1');
-                    if (await report.count() > 0) {
-                        pageContent = await report.first().innerHTML();
-                    } else {
-                        // Fallback to main container
+                    logger.info('Running ESPN Custom Handler...');
+                    // Wait for hydration
+                    await page.waitForTimeout(2000);
+
+                    // Try multiple possible content containers
+                    const selectors = [
+                        'div.ds-text-typo-mid1', // Standard Article
+                        'div.match-report-container',
+                        'article',
+                        'main'
+                    ];
+
+                    let found = false;
+                    for (const sel of selectors) {
+                        const locator = page.locator(sel);
+                        if (await locator.count() > 0) {
+                            logger.info(`ESPN Handler: Found content in ${sel}`);
+                            pageContent = await locator.first().innerHTML();
+                            found = true;
+                            break; // Stop at first valid match
+                        }
+                    }
+
+                    if (!found) {
+                        logger.warn('ESPN Handler: No specific selector found, dumping full body.');
                         pageContent = await page.content();
                     }
                 } catch (e) {
+                    logger.error(`ESPN Handler Error: ${e.message}`);
                     pageContent = await page.content();
                 }
             } else {
