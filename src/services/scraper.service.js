@@ -126,7 +126,11 @@ class ScraperService {
             logger.info(`Layer 3 failed/blocked. Attempting Layer 4 (Google Cache) for ${url}`);
             try {
                 const cacheUrl = `http://webcache.googleusercontent.com/search?q=cache:${encodeURIComponent(url)}`;
-                content = await this.browserParse(cacheUrl);
+                // CRITICAL: Google aggressively blocks DC IPs from cache, so we MUST use the proxy if available.
+                const opts = process.env.PROXY_SERVER_URL ? { proxy: process.env.PROXY_SERVER_URL } : {};
+
+                content = await this.browserParse(cacheUrl, opts);
+
                 // Clean up Google Header artifacts
                 if (content && content.textContent) {
                     content.title = content.title.replace(' - Google Search', '').replace('cache:', '');
@@ -369,8 +373,10 @@ class ScraperService {
             t.includes('attention required') ||
             t.includes('access denied') ||
             t.includes('security check') ||
+            t.includes('unusual traffic') ||
             b.includes('pardon our interruption') ||
-            b.includes('detected unusual activity');
+            b.includes('detected unusual activity') ||
+            b.includes('our systems have detected unusual traffic');
     }
 }
 
