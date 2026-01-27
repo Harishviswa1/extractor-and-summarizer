@@ -217,24 +217,49 @@ class ScraperService {
             context = await browser.newContext(contextOptions);
             page = await context.newPage();
 
-            // Resource Blocking (Optimize Speed)
-            await page.route('**/*', (route) => {
-                const type = route.request().resourceType();
-                // Block images, media, fontsEx
-                if (['image', 'media', 'font', 'stylesheet'].includes(type)) {
-                    route.abort();
-                } else {
-                    route.continue();
-                }
-            });
+            // Resource Blocking (Optimize Speed vs Stealth)
+            // If using Proxy (Layer 3), we want to look 100% human, so we load EVERYTHING (slower but safer).
+            // If NOT using Proxy (Layer 2), we block bloat for speed.
+            if (!opts.proxy) {
+                await page.route('**/*', (route) => {
+                    const type = route.request().resourceType();
+                    if (['image', 'media', 'font', 'stylesheet'].includes(type)) {
+                        route.abort();
+                    } else {
+                        route.continue();
+                    }
+                });
+            }
 
             const timeout = opts.proxy ? 60000 : 30000;
+            // For Proxy, wait for network idle (heavier check) to ensure full render
+            const waitStrategy = opts.proxy ? 'networkidle' : 'domcontentloaded';
 
             // Navigate
             await page.goto(url, {
-                waitUntil: 'domcontentloaded',
+                waitUntil: waitStrategy,
                 timeout: timeout
             });
+
+            // 3. Attempt to dismiss Cookie Banners (common issue with "short content")
+            if (opts.proxy) {
+                try {
+                    const buttons = await page.getByRole('button').all();
+                    for (const button of buttons) {
+                        const text = (await button.innerText()).toLowerCase();
+                        if (text.includes('accept') || text.includes('agree') || text.includes('allow') || text.includes('consent')) {
+                            // Click providing it's visible
+                            if (await button.isVisible()) {
+                                await button.click({ timeout: 2000 }).catch(() => { });
+                                break; // Click one is usually enough
+                            }
+                        }
+                    }
+                    await page.waitForTimeout(1000); // Wait for banner to clear
+                } catch (e) {
+                    // Ignore cookie click errors
+                }
+            }
 
             // Wait for Body to ensure render
             try {
