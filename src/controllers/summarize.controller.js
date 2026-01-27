@@ -136,14 +136,30 @@ exports.compare = async (req, res, next) => {
         const { url1, url2 } = req.body;
         if (!url1 || !url2) return next(new AppError('Two URLs required', 400));
 
-        const [r1, r2] = await Promise.all([
+        const results = await Promise.allSettled([
             scraperService.extract(url1),
             scraperService.extract(url2)
         ]);
 
-        // Use Markdown or Text for comparison to save tokens and improve quality
-        const t1 = r1.markdown || r1.textContent || r1.content;
-        const t2 = r2.markdown || r2.textContent || r2.content;
+        const [r1, r2] = results;
+
+        // Check for Failures
+        if (r1.status === 'rejected') {
+            return next(new AppError(`Failed to extract content from URL 1 (${url1}): ${r1.reason.message}`, 422));
+        }
+        if (r2.status === 'rejected') {
+            return next(new AppError(`Failed to extract content from URL 2 (${url2}): ${r2.reason.message}`, 422));
+        }
+
+        const data1 = r1.value;
+        const data2 = r2.value;
+
+        // Use Markdown or Text
+        const t1 = data1.markdown || data1.textContent || data1.content;
+        const t2 = data2.markdown || data2.textContent || data2.content;
+
+        if (!t1 || t1.length < 50) return next(new AppError('Content too short for URL 1', 422));
+        if (!t2 || t2.length < 50) return next(new AppError('Content too short for URL 2', 422));
 
         const comparison = await openaiService.compare(t1, t2);
 
