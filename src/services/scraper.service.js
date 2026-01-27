@@ -113,7 +113,8 @@ class ScraperService {
         if (!content && process.env.PROXY_SERVER_URL) {
             const status = lastError?.response?.status || 500;
             const msg = lastError?.message || '';
-            const needsProxy = status === 403 || status === 429 || msg.includes('Bot Block') || msg.includes('Timeout') || isBlock;
+            // Robust Check: If explicitly blocked OR if we simply failed to get content (Layer 2 failed silently)
+            const needsProxy = status === 403 || status === 429 || msg.includes('Bot Block') || msg.includes('Timeout') || isBlock || !content;
 
             if (needsProxy) {
                 try {
