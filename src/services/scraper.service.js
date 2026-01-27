@@ -89,24 +89,26 @@ class ScraperService {
             logger.warn(`Layer 1 failed: ${err.message}`);
         }
 
-        // Tier Check: If BASIC, stop here if failed
-        if (!content && userPlan === 'BASIC') {
-            throw new AppError('Basic Plan Limit: Simple extraction failed. Advanced scraping (Puppeteer/Playwright) is only available on the Pro Plan. Please upgrade.', 403);
-        }
-
         // Layer 2: Playwright Shared (No Proxy) - For JS sites / Basic Blocks
-        // SKIP if Layer 1 was clearly a 403/429 Block (Go straight to Proxy)
+        // SKIP if Layer 1 was clearly a 403/429 Block (Pro users go straight to Proxy, Basic users try L2 anyway)
         const isBlock = lastError && (lastError.response?.status === 403 || lastError.response?.status === 429);
+        const skipL2 = isBlock && userPlan !== 'BASIC'; // PRO users skip L2 if blocked to save time
 
-        if (!content && !isBlock) {
+        if (!content && !skipL2) {
             try {
                 logger.info(`Layer 2 (Playwright Stealth Shared): ${url}`);
-                content = await this.browserParse(url);
+                content = await this.browserParse(url); // No proxy options
                 strategy = 'playwright-readability';
             } catch (err) {
                 lastError = err;
                 logger.warn(`Layer 2 failed: ${err.message}`);
             }
+        }
+
+        // Tier Check: If BASIC, stop here. No expensive proxies allowed.
+        if (!content && userPlan === 'BASIC') {
+            // If L1 & L2 failed, game over for free users.
+            throw new AppError('Extraction failed. This site likely blocks basic scrapers. Upgrade to PRO to enable Residential Proxies.', 403);
         }
 
         // Layer 3: Playwright Proxy (Isolated Context) - ONLY on Block or Hard Failure
@@ -117,12 +119,43 @@ class ScraperService {
             const needsProxy = status === 403 || status === 429 || msg.includes('Bot Block') || msg.includes('Timeout') || isBlock || !content;
 
             if (needsProxy) {
-                try {
-                    logger.info(`Layer 3 (Playwright Stealth Proxy): ${url}`);
-                    content = await this.browserParse(url, { proxy: process.env.PROXY_SERVER_URL });
-                    strategy = 'playwright-proxy';
-                } catch (err) {
-                    logger.error(`Layer 3 failed: ${err.message}`);
+                // CHECK PROXY CAP (Safety Limit)
+                const proxyLimit = parseInt(process.env.PROXY_USAGE_LIMIT || '500', 10);
+                const currentUsage = parseInt(await redis.get('system:proxy_usage_total') || '0', 10);
+
+                if (currentUsage >= proxyLimit) {
+                    logger.warn(`Proxy Limit Reached (${currentUsage}/${proxyLimit}). Skipping Layer 3 to save costs.`);
+                    throw new AppError('Extraction failed (Privacy Limit Reached). Please contact admin.', 429);
+                }
+
+                // Retry Logic (Max 5 attempts)
+                let attempts = 0;
+                const maxRetries = 5;
+
+                while (attempts < maxRetries && !content) {
+                    attempts++;
+                    try {
+                        logger.info(`Layer 3 (Playwright Stealth Proxy): ${url} [Attempt ${attempts}/${maxRetries}] [Total Usage: ${currentUsage + attempts}]`);
+
+                        // Increment Usage per attempt
+                        await redis.incr('system:proxy_usage_total');
+
+                        content = await this.browserParse(url, { proxy: process.env.PROXY_SERVER_URL });
+
+                        if (content) {
+                            strategy = 'playwright-proxy';
+                            break; // Success!
+                        }
+                    } catch (err) {
+                        logger.warn(`Layer 3 Attempt ${attempts} failed: ${err.message}`);
+                        if (attempts === maxRetries) {
+                            logger.error(`Layer 3 failed after ${maxRetries} retries.`);
+                        }
+                    }
+                }
+
+                if (!content) {
+                    throw new AppError(`Proxy extraction failed after ${maxRetries} retries. Target is likely blocking or proxy is unstable.`, 422);
                 }
             }
         }

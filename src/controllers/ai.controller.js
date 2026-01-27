@@ -102,7 +102,6 @@ exports.rewrite = async (req, res, next) => {
         if (url) {
             const safeFormat = format || 'concise';
             const safeLang = lang || 'en';
-            // Cache Key updated (Tone/Audience removed)
             cacheKey = `rewrite:v2:${url}:${safeFormat}:${safeLang}:${length || 'med'}`;
 
             const cached = await redis.get(cacheKey);
