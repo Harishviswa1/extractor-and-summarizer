@@ -284,10 +284,28 @@ class ScraperService {
                 // Ignore timeout waiting for selector, might allow partial content
             }
 
-            const html = await page.content();
+            // 4. Site-Specific Handlers (for known tough sites)
+            let pageContent = '';
+
+            if (url.includes('espncricinfo.com')) {
+                try {
+                    // Start with known match report selector
+                    const report = page.locator('div.ds-text-typo-mid1');
+                    if (await report.count() > 0) {
+                        pageContent = await report.first().innerHTML();
+                    } else {
+                        // Fallback to main container
+                        pageContent = await page.content();
+                    }
+                } catch (e) {
+                    pageContent = await page.content();
+                }
+            } else {
+                pageContent = await page.content();
+            }
 
             await context.close(); // Clean up context and page
-            return this.parseHtml(html, url);
+            return this.parseHtml(pageContent, url);
 
         } catch (err) {
             if (context) await context.close().catch(() => { });
