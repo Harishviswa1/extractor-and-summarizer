@@ -128,9 +128,9 @@ class ScraperService {
                     throw new AppError('Extraction failed (Privacy Limit Reached). Please contact admin.', 429);
                 }
 
-                // Retry Logic (Max 5 attempts)
+                // Retry Logic (Max 3 attempts - Save Money)
                 let attempts = 0;
-                const maxRetries = 5;
+                const maxRetries = 3;
 
                 while (attempts < maxRetries && !content) {
                     attempts++;
@@ -140,6 +140,7 @@ class ScraperService {
                         // Increment Usage per attempt
                         await redis.incr('system:proxy_usage_total');
 
+                        // Use reduced wait strategy to avoid infinite loading timeouts
                         content = await this.browserParse(url, { proxy: process.env.PROXY_SERVER_URL });
 
                         if (content) {
@@ -274,14 +275,22 @@ class ScraperService {
             }
 
             const timeout = opts.proxy ? 60000 : 30000;
-            // For Proxy, wait for network idle (heavier check) to ensure full render
-            const waitStrategy = opts.proxy ? 'networkidle' : 'domcontentloaded';
+            // OPTIMIZATION: 'networkidle' is too strict and causes timeouts (burning proxy credits).
+            // Switch to 'domcontentloaded' + a smart fixed waiting period.
+            // This ensures we get the HTML without waiting for every ad pixel to finish loading.
+            const waitStrategy = 'domcontentloaded';
 
             // Navigate
             await page.goto(url, {
                 waitUntil: waitStrategy,
                 timeout: timeout
             });
+
+            // Extra "Human" Wait - allows dynamic content (React/hydration) to settle
+            // 4 seconds is usually the sweet spot for Hydration without hanging forever.
+            if (opts.proxy) {
+                await page.waitForTimeout(4000);
+            }
 
             // 3. Attempt to dismiss Cookie Banners (common issue with "short content")
             if (opts.proxy) {
@@ -322,35 +331,11 @@ class ScraperService {
 
             if (url.includes('espncricinfo.com')) {
                 try {
-                    logger.info('Running ESPN Custom Handler...');
-                    // Wait for hydration
-                    await page.waitForTimeout(2000);
-
-                    // Try multiple possible content containers
-                    const selectors = [
-                        'div.ds-text-typo-mid1', // Standard Article
-                        'div.match-report-container',
-                        'article',
-                        'main'
-                    ];
-
-                    let found = false;
-                    for (const sel of selectors) {
-                        const locator = page.locator(sel);
-                        if (await locator.count() > 0) {
-                            logger.info(`ESPN Handler: Found content in ${sel}`);
-                            pageContent = await locator.first().innerHTML();
-                            found = true;
-                            break; // Stop at first valid match
-                        }
-                    }
-
-                    if (!found) {
-                        logger.warn('ESPN Handler: No specific selector found, dumping full body.');
-                        pageContent = await page.content();
-                    }
+                    logger.info('Running ESPN Hydration Wait...');
+                    await page.waitForTimeout(2000); // Essential for React hydration
+                    pageContent = await page.content();
                 } catch (e) {
-                    logger.error(`ESPN Handler Error: ${e.message}`);
+                    logger.error(`ESPN Wait Error: ${e.message}`);
                     pageContent = await page.content();
                 }
             } else {
