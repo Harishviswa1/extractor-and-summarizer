@@ -26,9 +26,7 @@ const getContent = async (req) => {
 
 exports.analyze = async (req, res, next) => {
     try {
-        if (req.user?.plan === 'BASIC') {
-            return next(new AppError('Analyze feature is only available on the Pro Plan. Please upgrade.', 403));
-        }
+        // Removed Basic Plan restriction
 
         const { url } = req.query; // Changed from body to query
 
@@ -86,9 +84,7 @@ exports.analyze = async (req, res, next) => {
 
 exports.rewrite = async (req, res, next) => {
     try {
-        if (req.user?.plan === 'BASIC') {
-            return next(new AppError('Rewrite feature is only available on the Pro Plan. Please upgrade.', 403));
-        }
+        // Removed Basic Plan restriction
 
         // Accept dynamic params (Removed tone/audience)
         const { url, format, length, lang } = req.query; // Changed from body to query
